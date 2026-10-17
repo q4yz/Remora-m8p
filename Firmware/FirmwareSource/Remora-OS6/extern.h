@@ -13,6 +13,7 @@ extern uint32_t servo_freq;
 extern JsonObject module;
 
 extern volatile bool PRUreset;
+extern volatile bool commsLost;     // no SPI data from LinuxCNC, outputs in their safe state
 
 // unions for RX and TX data
 extern volatile rxData_t rxData;

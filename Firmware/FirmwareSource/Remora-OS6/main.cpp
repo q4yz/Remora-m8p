@@ -55,6 +55,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 // modules
 #include "module.h"
+#include "commsMonitor.h"
 #include "blink.h"
 #include "debug.h"
 #include "digitalPin.h"
@@ -342,6 +343,9 @@ void loadModules()
 
     // SPI communication monitoring
     servoThread->registerModule(comms);
+
+    // outputs go to their safe state while there is no SPI data from LinuxCNC
+    servoThread->registerModule(new CommsMonitor(comms));
 
     JsonArray Modules = doc["Modules"];
 

@@ -49,6 +49,13 @@ RCServo::RCServo(volatile float &ptrPositionCmd, std::string pin, int32_t thread
 
 void RCServo::update()
 {
+	if (commsLost)
+	{
+		// no pulses while LinuxCNC is disconnected, the servo is not driven
+		this->servoPin->set(false);
+		return;
+	}
+
 	counter++;
 
 	if (counter == this->t_compare)

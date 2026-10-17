@@ -17,6 +17,7 @@ class DigitalPin : public Module
 		volatile uint16_t *ptrData; 	// pointer to the data source
 		int bitNumber;				// location in the data source
 		bool invert;
+		bool safeState;				// output level while LinuxCNC is disconnected
 		int mask;
 
 		int mode;
@@ -28,6 +29,7 @@ class DigitalPin : public Module
 	public:
 
         DigitalPin(volatile uint16_t&, int, std::string, int, bool, int);
+		void setSafeState(bool);
 		virtual void update(void);
 		virtual void slowUpdate(void);
 };

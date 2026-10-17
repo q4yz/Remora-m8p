@@ -110,7 +110,8 @@
 	"Type": "PWM",
 		"Comment": 			"Bed heater PWM",
 		"SP[i]": 			0,
-		"PWM Pin": 			"PA_1"
+		"PWM Pin": 			"PA_1",
+		"Safe Duty":		0
 	},
 	{
 	"Thread": "Servo",
@@ -131,7 +132,8 @@
 	"Type": "PWM",
 		"Comment": 			"Ext0 heater PWM",
 		"SP[i]": 			1,
-		"PWM Pin": 			"PA_2"
+		"PWM Pin": 			"PA_2",
+		"Safe Duty":		0
 	},
 	{
 	"Thread": "Servo",

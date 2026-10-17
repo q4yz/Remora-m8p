@@ -21,6 +21,7 @@ class PWM : public Module
 		int 			SP;
 		std::string 	portAndPin;
 		int 			pwmMax;
+		float 			safeDuty;		// duty (%) while LinuxCNC is disconnected
 
 		SoftPWM* 		pwm;			// pointer to PWM object - output
 
@@ -29,6 +30,8 @@ class PWM : public Module
 
 		PWM(volatile float&, std::string);
 		PWM(volatile float&, std::string, int);
+
+		void setSafeDuty(float);
 
 		virtual void update(void);
 		virtual void slowUpdate(void);

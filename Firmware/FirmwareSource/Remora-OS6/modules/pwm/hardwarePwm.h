@@ -26,11 +26,14 @@ class HardwarePWM : public Module
         int pwmPulseWidth_us;               // Pulse width (us)
 
         bool variablePeriod;
+        float safeDuty;                     // pulse width (%) while LinuxCNC is disconnected
 
 	public:
 
 		HardwarePWM(volatile float&, int, std::string);			        
         HardwarePWM(volatile float&, volatile float&, int, std::string);	
+
+        void setSafeDuty(float);
 
 		virtual void update(void);          // Module default interface
 		virtual void slowUpdate(void);      // Module default interface

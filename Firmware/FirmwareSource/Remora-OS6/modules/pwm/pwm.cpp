@@ -20,6 +20,9 @@ void createPWM()
     const char* variable = module["Variable Freq"];
     int period_sp = module["Period SP[i]"];
     int period = module["Period us"];
+    float safeDuty = module["Safe Duty"] | 0.0f;      // duty (%) while LinuxCNC is disconnected
+
+    printf("Safe duty %d%%\n", (int)safeDuty);
 
     printf("Make PWM at pin %s\n", pin);
     
@@ -33,13 +36,15 @@ void createPWM()
             // Variable frequency hardware PWM
             ptrSetPoint[period_sp] = &rxData.setPoint[period_sp];
 
-            Module* pwm = new HardwarePWM(*ptrSetPoint[period_sp], *ptrSetPoint[sp], period, pin);
+            HardwarePWM* pwm = new HardwarePWM(*ptrSetPoint[period_sp], *ptrSetPoint[sp], period, pin);
+            pwm->setSafeDuty(safeDuty);
             servoThread->registerModule(pwm);
         }
         else
         {
             // Fixed frequency hardware PWM
-            Module* pwm = new HardwarePWM(*ptrSetPoint[sp], period, pin);
+            HardwarePWM* pwm = new HardwarePWM(*ptrSetPoint[sp], period, pin);
+            pwm->setSafeDuty(safeDuty);
             servoThread->registerModule(pwm);
         }
     }
@@ -48,12 +53,14 @@ void createPWM()
         // Software PWM
         if (pwmMax != 0) // use configuration file value for pwmMax - useful for 12V on 24V systems
         {
-            Module* pwm = new PWM(*ptrSetPoint[sp], pin, pwmMax);
+            PWM* pwm = new PWM(*ptrSetPoint[sp], pin, pwmMax);
+            pwm->setSafeDuty(safeDuty);
             servoThread->registerModule(pwm);
         }
         else // use default value of pwmMax
         {
-            Module* pwm = new PWM(*ptrSetPoint[sp], pin);
+            PWM* pwm = new PWM(*ptrSetPoint[sp], pin);
+            pwm->setSafeDuty(safeDuty);
             servoThread->registerModule(pwm);
         }
     }
@@ -74,6 +81,7 @@ PWM::PWM(volatile float &ptrSP, std::string portAndPin) :
 	this->pwm = new SoftPWM(this->portAndPin);
 	this->pwmMax = PID_PWM_MAX-1;
 	this->pwm->setMaxPwm(this->pwmMax);
+	this->safeDuty = 0;
 }
 
 // use the following constructor when using 12v devices on a 24v system
@@ -87,6 +95,13 @@ PWM::PWM(volatile float &ptrSP, std::string portAndPin, int pwmMax) :
 
 	this->pwm = new SoftPWM(this->portAndPin);
 	this->pwm->setMaxPwm(this->pwmMax);
+	this->safeDuty = 0;
+}
+
+
+void PWM::setSafeDuty(float duty)
+{
+	this->safeDuty = duty;
 }
 
 
@@ -95,8 +110,8 @@ void PWM::update()
 {
 	float SP;
 
-	// update the speed SP
-	this->SP = *(this->ptrSP);
+	// update the speed SP, or use the safe duty while LinuxCNC is disconnected
+	this->SP = commsLost ? this->safeDuty : *(this->ptrSP);
 
     // ensure SP is within range. LinuxCNC PID can have -ve command value
 	if (this->SP > 100) this->SP = 100;

@@ -14,6 +14,7 @@ void createDigitalPin()
     const char* invert = module["Invert"];
     const char* modifier = module["Modifier"];
     int dataBit = module["Data Bit"];
+    const char* safeState = module["Safe State"] | "Low";     // physical output level while LinuxCNC is disconnected
 
     int mod;
     bool inv;
@@ -53,7 +54,9 @@ void createDigitalPin()
     if (!strcmp(mode,"Output"))
     {
         //Module* digitalPin = new DigitalPin(*ptrOutputs, 1, pin, dataBit, invert);
-        Module* digitalPin = new DigitalPin(*ptrOutputs, 1, pin, dataBit, inv, mod);
+        DigitalPin* digitalPin = new DigitalPin(*ptrOutputs, 1, pin, dataBit, inv, mod);
+        digitalPin->setSafeState(!strcmp(safeState, "High"));
+        printf("Safe state %s\n", !strcmp(safeState, "High") ? "High" : "Low");
         servoThread->registerModule(digitalPin);
     }
     else if (!strcmp(mode,"Input"))
@@ -83,6 +86,13 @@ DigitalPin::DigitalPin(volatile uint16_t &ptrData, int mode, std::string portAnd
 {
 	this->pin = new Pin(this->portAndPin, this->mode, this->modifier);		// Input 0x0, Output 0x1
 	this->mask = 1 << this->bitNumber;
+	this->safeState = false;
+}
+
+
+void DigitalPin::setSafeState(bool state)
+{
+	this->safeState = state;
 }
 
 
@@ -109,10 +119,17 @@ void DigitalPin::update()
 	}
 	else												// the pin is configured as an output
 	{
-		pinState = *(this->ptrData) & this->mask;		// get the value of the bit in the data source
-		if(this->invert)
+		if (commsLost)
 		{
-			pinState = !pinState;
+			pinState = this->safeState;					// physical safe level, not affected by invert
+		}
+		else
+		{
+			pinState = *(this->ptrData) & this->mask;	// get the value of the bit in the data source
+			if(this->invert)
+			{
+				pinState = !pinState;
+			}
 		}
 		this->pin->set(pinState);			// simple conversion to boolean
 	}

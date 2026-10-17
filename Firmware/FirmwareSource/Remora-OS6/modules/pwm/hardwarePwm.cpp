@@ -1,4 +1,5 @@
 #include "hardwarePwm.h"
+#include "extern.h"
 
 using namespace std;
 
@@ -12,6 +13,7 @@ HardwarePWM::HardwarePWM(volatile float &ptrPwmPulseWidth, int pwmPeriod, std::s
     cout << "Creating Hardware PWM at pin " << this->pin << endl;
 
     variablePeriod = false;
+    safeDuty = 0;
 
     if (pwmPeriod == 0)
     {
@@ -40,6 +42,7 @@ HardwarePWM::HardwarePWM(volatile float &ptrPwmPeriod, volatile float &ptrPwmPul
     cout << "Creating variable frequency Hardware PWM at pin " << this->pin << endl;
 
     variablePeriod = true;
+    safeDuty = 0;
 
     if (pwmPeriod == 0)
     {
@@ -73,15 +76,24 @@ void HardwarePWM::update()
         }
     }
 
-    if (*(this->ptrPwmPulseWidth) != this->pwmPulseWidth)
+    // use the safe duty while LinuxCNC is disconnected
+    float pulseWidth = commsLost ? this->safeDuty : *(this->ptrPwmPulseWidth);
+
+    if (pulseWidth != this->pwmPulseWidth)
     {
         // PWM duty has changed
-        this->pwmPulseWidth = *(this->ptrPwmPulseWidth);
+        this->pwmPulseWidth = pulseWidth;
         this->pwmPulseWidth_us = (this->pwmPeriod * this->pwmPulseWidth) / 100.0;
         this->pwmPin->pulsewidth_us(this->pwmPulseWidth_us);
     } 
 
     return;
+}
+
+
+void HardwarePWM::setSafeDuty(float duty)
+{
+    this->safeDuty = duty;
 }
 
 
