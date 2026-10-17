@@ -30,6 +30,12 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "SDIOBlockDevice.h"
 #endif
 
+// SD card upload over SPI, for the STM32F4 boards with an SDIO card slot
+#if defined(TARGET_STM32F4) && (defined(TARGET_SKRV2) || defined(TARGET_OCTOPUS_446) || defined(TARGET_BLACK_F407VE) || defined(TARGET_OCTOPUS_429))
+#define SD_UPLOAD
+#include "sdUpload.h"
+#endif
+
 #include "configuration.h"
 #include "remora.h"
 
@@ -169,6 +175,20 @@ DynamicJsonDocument doc(JSON_BUFF_SIZE);
 JsonObject thread;
 JsonObject module;
 
+#ifdef SD_UPLOAD
+void stopThreads()
+{
+    if (threadsRunning)
+    {
+        baseThread->stopThread();
+        servoThread->stopThread();
+        threadsRunning = false;
+    }
+}
+
+SDUpload sdUpload(comms, &fileSystem, &blockDevice, ptrTxData, stopThreads);
+#endif
+
 /***********************************************************************
         INTERRUPT HANDLERS - add NVIC_SetVector etc to setup()
 ************************************************************************/
@@ -200,6 +220,13 @@ void readJsonConfig()
     fflush(stdout);
     jsonFile = fopen("/fs/config.txt", "r+");
     printf("%s\n", (!jsonFile ? "Fail :(" : "OK"));
+
+    if (!jsonFile)
+    {
+        // keep going without modules so a config file can still be uploaded over SPI
+        configError = true;
+        return;
+    }
 
     fseek (jsonFile, 0, SEEK_END);
     int32_t length = ftell (jsonFile);
@@ -456,6 +483,16 @@ int main()
       // two threads- Base and Servo threads that run the Modules.
 
     watchdog.kick();
+
+#ifdef SD_UPLOAD
+    // SD card upload from the Raspberry Pi while LinuxCNC is offline, suspends normal operation
+    sdUpload.service();
+    if (sdUpload.isActive())
+    {
+        comms->SPItasks();
+        continue;
+    }
+#endif
 
     switch(currentState){
         case ST_SETUP:

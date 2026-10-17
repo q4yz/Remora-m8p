@@ -42,6 +42,10 @@ class RemoraComms : public Module
 
         bool                SPIdata;
         bool                SPIdataError;
+
+        rxData_t            uploadRxBuffer;     // copy of the last SD upload frame
+        bool                uploadFrame;        // a new SD upload frame is waiting in uploadRxBuffer
+        bool                uploadMode;         // SD upload in progress, re-align the DMA on framing errors
         
         PinName             interruptPin;
         InterruptIn         slaveSelect;
@@ -62,6 +66,11 @@ class RemoraComms : public Module
         void setStatus(bool);
         bool getError(void);
         void setError(bool);
+
+        bool getUploadFrame(uint8_t*);
+        void setUploadMode(bool);
+        void stopDMA(void);
+        void restartDMA(void);
 
 };
 

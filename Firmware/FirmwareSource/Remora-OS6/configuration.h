@@ -21,6 +21,7 @@
 #define PRU_READ            0x72656164      // "read" SPI payload
 #define PRU_WRITE           0x77726974      // "writ" SPI payload
 #define PRU_ESTOP           0x65737470      // "estp" SPI payload
+#define PRU_UPLOAD          0x75706c64      // "upld" SPI payload - SD card file upload while LinuxCNC is offline
 
 
 // Serial configuration

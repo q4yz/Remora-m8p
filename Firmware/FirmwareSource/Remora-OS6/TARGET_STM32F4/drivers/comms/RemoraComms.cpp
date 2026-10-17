@@ -11,6 +11,8 @@ RemoraComms::RemoraComms(volatile rxData_t* ptrRxData, volatile txData_t* ptrTxD
     slaveSelect(interruptPin)
 {
     this->spiHandle.Instance = this->spiType;
+    this->uploadFrame = false;
+    this->uploadMode = false;
 
     if (this->interruptPin == PA_4)
     {
@@ -330,9 +332,17 @@ void RemoraComms::SPItasks()
 
         if (this->resetSPI)
         {
+            this->resetSPI = false;
+
+            if (this->uploadMode)
+            {
+                // the frame boundary has been lost (DMA restarted mid transfer), drop the frame and re-align
+                this->restartDMA();
+                return;
+            }
+
             // for testing, not needed / implemented
             printf("  Reset SPI now\n");
-            this->resetSPI = false;
         }
 
         switch (this->spiRxBuffer.header)
@@ -361,7 +371,17 @@ void RemoraComms::SPItasks()
 
                 // re-enable thread interrupts
                 __enable_irq();
-                
+
+                break;
+
+            case PRU_UPLOAD:
+                this->rejectCnt = 0;
+                // copy the frame now, before the next transfer overwrites the DMA buffer
+                for (int i = 0; i < SPI_BUFF_SIZE; i++)
+                {
+                    this->uploadRxBuffer.rxBuffer[i] = this->spiRxBuffer.rxBuffer[i];
+                }
+                this->uploadFrame = true;
                 break;
 
             default:
@@ -393,4 +413,60 @@ bool RemoraComms::getError(void)
 void RemoraComms::setError(bool error)
 {
     this->SPIdataError = error;
+}
+
+bool RemoraComms::getUploadFrame(uint8_t* frame)
+{
+    if (!this->uploadFrame) return false;
+
+    for (int i = 0; i < SPI_BUFF_SIZE; i++)
+    {
+        frame[i] = this->uploadRxBuffer.rxBuffer[i];
+    }
+    this->uploadFrame = false;
+    return true;
+}
+
+void RemoraComms::setUploadMode(bool mode)
+{
+    this->uploadMode = mode;
+}
+
+void RemoraComms::stopDMA()
+{
+    // release the DMA streams, SDIO RX shares DMA2 stream 3 with SPI1 TX
+    HAL_SPI_DMAStop(&this->spiHandle);
+}
+
+void RemoraComms::restartDMA()
+{
+    HAL_SPI_DMAStop(&this->spiHandle);
+
+    // wait for the master to finish any transfer in progress so the next frame starts on a boundary
+    uint32_t start = HAL_GetTick();
+    while (!this->slaveSelect.read() && (HAL_GetTick() - start) < 10) {}
+
+    // reset the SPI peripheral to discard any stale byte in the data register and the overrun flag.
+    // The comms DMA runs without interrupts, make sure a failed SD card init has not left the
+    // shared stream's interrupt enabled with the SDIO handler
+    if (this->spiHandle.Instance == SPI1)
+    {
+        __HAL_RCC_SPI1_FORCE_RESET();
+        __HAL_RCC_SPI1_RELEASE_RESET();
+        HAL_NVIC_DisableIRQ(DMA2_Stream0_IRQn);
+        HAL_NVIC_DisableIRQ(DMA2_Stream3_IRQn);
+    }
+    else if (this->spiHandle.Instance == SPI2)
+    {
+        __HAL_RCC_SPI2_FORCE_RESET();
+        __HAL_RCC_SPI2_RELEASE_RESET();
+        HAL_NVIC_DisableIRQ(DMA1_Stream3_IRQn);
+        HAL_NVIC_DisableIRQ(DMA1_Stream4_IRQn);
+    }
+
+    // re-initialise the SPI and DMA handles (the SD card may have reconfigured the shared DMA stream),
+    // without resetting the TX buffer header like start() does
+    this->init();
+    this->NSS = false;
+    HAL_SPI_TransmitReceive_DMA(&this->spiHandle, (uint8_t *)this->ptrTxData->txBuffer, (uint8_t *)this->spiRxBuffer.rxBuffer, SPI_BUFF_SIZE);
 }
