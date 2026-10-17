@@ -7,6 +7,8 @@
 #define SWBAUDRATE          19200           // Software serial baud rate
 #define PRU_COMMSFREQ       (SWBAUDRATE * OVERSAMPLE)
 
+#define STEP_PULSE_MIN_NS   3000            // Minimum step pulse high time (ns) - raise if drivers miss steps
+
 #define STEPBIT     		22            	// bit location in DDS accum
 #define STEP_MASK   		  (1L<<STEPBIT)
 

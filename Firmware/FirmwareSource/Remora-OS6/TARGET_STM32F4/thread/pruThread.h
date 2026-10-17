@@ -24,6 +24,7 @@ class pruThread
 		uint32_t 			frequency;
 
         bool hasThreadPost;		// run updatePost() vector
+        uint32_t postDelayCycles;	// minimum CPU cycles between main and post vectors (step pulse width)
 
 		vector<Module*> vThread;		// vector containing pointers to Thread modules
         vector<Module*> vThreadPost;		// vector containing pointers to Thread modules that run after the main vector modules

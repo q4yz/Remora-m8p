@@ -1,5 +1,6 @@
 #include "pruThread.h"
 #include "modules/module.h"
+#include "configuration.h"
 
 
 using namespace std;
@@ -8,8 +9,15 @@ using namespace std;
 pruThread::pruThread(TIM_TypeDef* timer, IRQn_Type irq, uint32_t frequency) :
 	timer(timer),
 	irq(irq),
-	frequency(frequency)
+	frequency(frequency),
+	hasThreadPost(false)
 {
+	// enable the DWT cycle counter, used to time the minimum step pulse width
+	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	DWT->CYCCNT = 0;
+	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+	this->postDelayCycles = (uint32_t)(((uint64_t)SystemCoreClock * STEP_PULSE_MIN_NS) / 1000000000ULL);
+
 	printf("Creating thread %d\n", this->frequency);
 }
 
@@ -49,6 +57,10 @@ void pruThread::run(void)
     // iterate over the second vector that contains module pointers to run after (post) the main vector
 	if (hasThreadPost)
 	{
+		// hold outputs (step pins) high for the minimum pulse width before running the post vector
+		uint32_t start = DWT->CYCCNT;
+		while ((DWT->CYCCNT - start) < this->postDelayCycles);
+
 		for (iter = vThreadPost.begin(); iter != vThreadPost.end(); ++iter) (*iter)->runModulePost();
 	}
 }
