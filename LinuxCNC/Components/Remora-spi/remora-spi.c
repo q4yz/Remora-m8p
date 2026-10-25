@@ -299,6 +299,7 @@ int rtapi_app_main(void)
 	if(!rt_peripheral_init())
 	{
 	  rtapi_print_msg(RTAPI_MSG_ERR,"rt_peripheral_init failed.\n");
+	  hal_exit(comp_id);
       return -1;
 		
 	}
@@ -521,7 +522,7 @@ int rt_peripheral_init(void)
         buflen = fread(buf, 1, sizeof(buf), fp);
         if(buflen < 0) {
             rtapi_print_msg(RTAPI_MSG_ERR,"Failed to read platform identity.\n");
-            return -1;
+            return 0;
         }
 
         // Decompose the device-tree buffer into a string-list with the pointers to
@@ -582,7 +583,7 @@ int rt_peripheral_init(void)
 		if (!rt_bcm2835_init())
 		{
 		  rtapi_print_msg(RTAPI_MSG_ERR,"rt_bcm2835_init failed. Are you running with root privlages??\n");
-		  return -1;
+		  return 0;
 		}
 
 		// Set the SPI0 pins to the Alt 0 function to enable SPI0 access, setup CS register
@@ -590,7 +591,7 @@ int rt_peripheral_init(void)
 		if (!bcm2835_spi_begin())
 		{
 		  rtapi_print_msg(RTAPI_MSG_ERR,"bcm2835_spi_begin failed. Are you running with root privlages??\n");
-		  return -1;
+		  return 0;
 		}
 
 		// Configure SPI0
@@ -615,7 +616,7 @@ int rt_peripheral_init(void)
 			{
 				// it's not a power of 2
 				rtapi_print_msg(RTAPI_MSG_ERR,"ERROR: PRU SPI clock divider incorrect\n");
-				return -1;
+				return 0;
 			}	
 		}
 		else
@@ -642,20 +643,20 @@ int rt_peripheral_init(void)
 	}
 	else if (rp1 == true)
 	{
-		if (!rt_rp1lib_init())
+		if (rt_rp1lib_init() != 1)                                // returns -1 or errno on failure
 		{
 			rtapi_print_msg(RTAPI_MSG_ERR,"rt_rp1_init failed.\n");
-			return -1;
+			return 0;
 		}
 
 		if (SPI_num == -1) SPI_num = 0; // default to SPI0
 		if (CS_num == -1) CS_num = 0; // default to CS0
 		if (SPI_freq == -1) SPI_freq = 20000000; // default to 20MHz
 		
-		if (!rp1spi_init(SPI_num, CS_num, SPI_MODE_0, SPI_freq))  // SPIx, CSx, mode, freq
+		if (rp1spi_init(SPI_num, CS_num, SPI_MODE_0, SPI_freq) != 1)  // SPIx, CSx, mode, freq, returns -1 on failure
 		{
 			rtapi_print_msg(RTAPI_MSG_ERR,"rp1spi_init failed.\n");
-			return -1;
+			return 0;
 		}
 	}
 	else if (gspi == true)
@@ -691,7 +692,7 @@ int rt_peripheral_init(void)
 	}
 	else
 	{
-		return -1;
+		return 0;
 	}
 
 	return 1;
