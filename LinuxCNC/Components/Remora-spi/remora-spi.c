@@ -34,6 +34,10 @@
 
 // Include these in the source directory when using "halcompile --install remora-spi.c"
 
+// Other boards (e.g. BigTreeTech CB1) use the Linux spidev and GPIO character devices
+#include "gspi.h"
+#include "gspi.c"
+
 // Using BCM2835 driver library by Mike McCauley, why reinvent the wheel!
 // http://www.airspayce.com/mikem/bcm2835/index.html
 #include "bcm2835.h"
@@ -151,6 +155,7 @@ static const char 	*prefix = PREFIX;
 
 static bool			bcm;					// use BCM2835 driver
 static bool			rp1;					// use RP1 driver
+static bool			gspi;					// use the generic Linux spidev driver
 
 static int 			num_chan = 0;			// number of step generators configured
 static long 		old_dtns;				// update_freq function period in nsec - (THIS IS RUNNING IN THE PI)
@@ -184,6 +189,19 @@ RTAPI_MP_INT(CS_num, "CS number");
 
 int32_t SPI_freq = -1;
 RTAPI_MP_INT(SPI_freq, "SPI frequency");
+
+// for the generic Linux driver (boards other than the Raspberry Pi, e.g. BigTreeTech CB1)
+char *spi_backend = "auto";
+RTAPI_MP_STRING(spi_backend, "SPI driver: auto (Raspberry Pi drivers on a Pi, spidev otherwise) or spidev");
+
+char *spi_dev = "";
+RTAPI_MP_STRING(spi_dev, "spidev device for the generic driver, default: first /dev/spidevB.C found");
+
+char *reset_pin = "";
+RTAPI_MP_STRING(reset_pin, "PRU reset GPIO for the generic driver, line number or port name like PH9");
+
+char *reset_chip = GSPI_DEFAULT_GPIOCHIP;
+RTAPI_MP_STRING(reset_chip, "gpiochip of reset_pin for the generic driver");
 
 static int reset_gpio_pin = 25;				// RPI GPIO pin number used to force watchdog reset of the PRU 
 
@@ -275,7 +293,8 @@ int rtapi_app_main(void)
 	
 	bcm = false;
 	rp1 = false;
-	
+	gspi = false;
+
 	// initialise the gpio and spi peripherals
 	if(!rt_peripheral_init())
 	{
@@ -470,6 +489,12 @@ This is throwing errors from axis.py for some reason...
 
 void rtapi_app_exit(void)
 {
+	if (gspi == true)
+	{
+		gspi_reset_close();
+		gspi_close();
+	}
+
     hal_exit(comp_id);
 }
 
@@ -511,6 +536,7 @@ int rt_peripheral_init(void)
                 cptr = NULL;
         }
 
+        // check every entry, the board model is not always the first one
         for(i = 0; dtcs[i] != NULL; i++) {
             if(        !strcmp(dtcs[i], DTC_RPI_MODEL_4B)
                 ||    !strcmp(dtcs[i], DTC_RPI_MODEL_4CM)
@@ -525,16 +551,31 @@ int rt_peripheral_init(void)
                 rtapi_print_msg(RTAPI_MSG_ERR, "Raspberry Pi 5, using rp1 driver\n");
                 rp1 = true;
                 break;    // Found our supported board
-            } else {
-                rtapi_print_msg(RTAPI_MSG_ERR, "Error, RPi not detected\n");
-                return -1;
             }
+        }
+
+        if (!bcm && !rp1) {
+            rtapi_print_msg(RTAPI_MSG_ERR, "No supported Raspberry Pi detected (%s), using the generic spidev driver\n",
+                            dtcs[0] ? dtcs[0] : "unknown board");
         }
         fclose(fp);
     } else {
         rtapi_print_msg(RTAPI_MSG_ERR,"Cannot open '/proc/device-tree/compatible' for read.\n");
-    }    	  	
-        
+    }
+
+    if (!strcmp(spi_backend, "spidev")) {
+        if (bcm || rp1) {
+            rtapi_print_msg(RTAPI_MSG_ERR, "spi_backend=spidev, using the generic spidev driver instead of the Raspberry Pi driver\n");
+        }
+        bcm = false;
+        rp1 = false;
+    } else if (strcmp(spi_backend, "auto")) {
+        rtapi_print_msg(RTAPI_MSG_ERR, "ERROR: spi_backend must be 'auto' or 'spidev'\n");
+        return 0;
+    }
+
+    gspi = !bcm && !rp1;
+
 	if (bcm == true)
 	{
 		// Map the RPi BCM2835 peripherals - uses "rtapi_open_as_root" in place of "open"
@@ -617,11 +658,43 @@ int rt_peripheral_init(void)
 			return -1;
 		}
 	}
+	else if (gspi == true)
+	{
+		const char *dev = spi_dev[0] ? spi_dev : gspi_find_device();
+
+		if (dev == NULL)
+		{
+			rtapi_print_msg(RTAPI_MSG_ERR, "remora-spi: no /dev/spidev device found, enable spidev with a device tree overlay\n");
+			return 0;
+		}
+
+		if (SPI_freq == -1) SPI_freq = GSPI_DEFAULT_FREQ;
+
+		if (!gspi_init(dev, SPI_freq))
+		{
+			return 0;
+		}
+
+		// the PRU reset pin is optional, only used when the firmware config has a "Reset Pin" module
+		if (reset_pin[0])
+		{
+			if (!gspi_reset_init(reset_chip, reset_pin))
+			{
+				gspi_close();
+				return 0;
+			}
+		}
+		else
+		{
+			rtapi_print_msg(RTAPI_MSG_ERR, "remora-spi: no reset_pin set, %s.PRU-reset has no effect\n", prefix);
+		}
+	}
 	else
 	{
 		return -1;
 	}
 
+	return 1;
 }
 
 // This is the same as the standard bcm2835 library except for the use of
@@ -1044,6 +1117,10 @@ void spi_read()
 		{
 			gpio_set(reset_gpio_pin);
 		}
+		else if (gspi == true)
+		{
+			gspi_reset_set(1);
+		}
     }
 	else
 	{
@@ -1054,6 +1131,10 @@ void spi_read()
 		else if (rp1 == true)
 		{
 			gpio_clear(reset_gpio_pin);
+		}
+		else if (gspi == true)
+		{
+			gspi_reset_set(0);
 		}
     }
 	
@@ -1212,6 +1293,10 @@ void spi_transfer()
 	else if (rp1 == true)
 	{
 		rp1spi_transfer(0, txData.txBuffer, rxData.rxBuffer, SPIBUFSIZE);
+	}
+	else if (gspi == true)
+	{
+		gspi_transfer(txData.txBuffer, rxData.rxBuffer, SPIBUFSIZE);
 	}
 }
 

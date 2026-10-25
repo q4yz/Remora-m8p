@@ -28,6 +28,8 @@ sudo halcompile --install ./Remora-eth/remora-eth-3.0.c
 
 sudo halcompile --install ./Remora-spi/remora-spi.c
 
+`remora-spi` runs on the Raspberry Pi and, through Linux spidev, on other boards such as the BigTreeTech CB1, see [Remora-spi/README.md](Remora-spi/README.md).
+
 
 
 sudo halcompile --install ./PRUencoder/PRUencoder.c
