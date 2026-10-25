@@ -27,7 +27,7 @@ If a read fails (e.g. the sensor file doesn't exist because this isn't a Pi) the
 In `custom.hal` (or any HAL file):
 
 ```
-loadusr -Wn rpi-monitor python3 /home/pi/LinuxCNC_UI/Components/RPiMonitor/rpi_monitor.py 1.0
+loadusr -Wn rpi-monitor rpi-monitor 1.0
 
 net cpu-temp rpi-monitor.cpu-temp
 net cpu-load rpi-monitor.cpu-load
