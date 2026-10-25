@@ -9,6 +9,10 @@
 
 #define STEP_PULSE_MIN_NS   3000            // Minimum step pulse high time (ns) - raise if drivers miss steps
 
+#ifndef REMORA_DEBUG
+#define REMORA_DEBUG        0               // 1: print boot info and SPI link statistics on the debug UART
+#endif                                      //    while the link is down, build with: mbed compile ... -DREMORA_DEBUG=1
+
 #define STEPBIT     		22            	// bit location in DDS accum
 #define STEP_MASK   		  (1L<<STEPBIT)
 

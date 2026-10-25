@@ -33,6 +33,8 @@ RemoraComms::RemoraComms(volatile rxData_t* ptrRxData, volatile txData_t* ptrTxD
     this->SPIdataError = false;
     this->uploadFrame = false;
     this->uploadMode = false;
+    this->dbgFrames = this->dbgReads = this->dbgWrites = this->dbgRejects = this->dbgTimeouts = 0;
+    this->dbgLastBad = 0;
 
     if (this->spiType != SPI2 || this->interruptPin != PB_12)
     {
@@ -163,6 +165,7 @@ void RemoraComms::SPItasks()
     if (this->NSS)
     {
         this->NSS = false;
+        this->dbgFrames++;
 
         this->DMArxCnt = 0;
         this->ticksStart = HAL_GetTick();
@@ -176,6 +179,7 @@ void RemoraComms::SPItasks()
             if (this->ticks > 2)
             {
                 this->resetSPI = true;
+                this->dbgTimeouts++;
                 break;
             }
         }
@@ -198,12 +202,14 @@ void RemoraComms::SPItasks()
         switch (this->spiRxBuffer.header)
         {
             case PRU_READ:
+                this->dbgReads++;
                 this->data = true;
                 this->rejectCnt = 0;
                 // READ so do nothing with the received data
                 break;
 
             case PRU_WRITE:
+                this->dbgWrites++;
                 this->data = true;
                 this->rejectCnt = 0;
 
@@ -231,6 +237,8 @@ void RemoraComms::SPItasks()
 
             default:
                 this->rejectCnt++;
+                this->dbgRejects++;
+                this->dbgLastBad = this->spiRxBuffer.header;
                 if (this->rejectCnt > 5)
                 {
                     this->SPIdataError = true;

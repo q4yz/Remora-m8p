@@ -72,6 +72,14 @@ class RemoraComms : public Module
         void stopDMA(void);
         void restartDMA(void);
 
+        // link statistics, printed by main() while the link is down (REMORA_DEBUG)
+        volatile uint32_t   dbgFrames;          // NSS rising edges handled
+        volatile uint32_t   dbgReads;           // good PRU_READ frames
+        volatile uint32_t   dbgWrites;          // good PRU_WRITE frames
+        volatile uint32_t   dbgRejects;         // frames with an unknown header
+        volatile uint32_t   dbgTimeouts;        // DMA did not complete a frame in time
+        volatile int32_t    dbgLastBad;         // header of the last rejected frame
+
 };
 
 #endif

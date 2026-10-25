@@ -467,6 +467,43 @@ void debugThreadLow()
     //commsThread->registerModule(debugOffC); 
 }
 
+#if REMORA_DEBUG
+// Debug output on the console UART (Manta M8P: EXP2 pin 7, 115200 baud)
+
+void debugBootInfo()
+{
+    printf("[debug] SystemCoreClock %lu Hz, reset cause:", (unsigned long)SystemCoreClock);
+#ifdef RCC_FLAG_PORRST
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_PORRST)) printf(" power-on");
+#endif
+#ifdef RCC_FLAG_PWRRST
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_PWRRST)) printf(" power-on");
+#endif
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST)) printf(" reset-pin");
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST)) printf(" software");
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) printf(" WATCHDOG");
+    printf("\n");
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+}
+
+void debugLinkReport(int state)
+{
+    // printf blocks the main loop (~87 us per character), so only report while the link is not
+    // running, a report while running would make the board miss SPI frames and drop the link
+    static const char* const names[] = {"SETUP", "START", "IDLE", "RUNNING", "STOP", "RESET", "WDRESET"};
+    static uint32_t last = 0;
+
+    if (state == ST_RUNNING || (HAL_GetTick() - last) < 1000) return;
+    last = HAL_GetTick();
+
+    printf("[debug] %s reset-pin=%d frames=%lu read=%lu write=%lu rejected=%lu (last 0x%08lx) dma-timeouts=%lu config=%s\n",
+           names[state], (int)PRUreset,
+           (unsigned long)comms->dbgFrames, (unsigned long)comms->dbgReads, (unsigned long)comms->dbgWrites,
+           (unsigned long)comms->dbgRejects, (unsigned long)comms->dbgLastBad, (unsigned long)comms->dbgTimeouts,
+           configError ? "ERROR" : "ok");
+}
+#endif
+
 int main()
 {
     
@@ -481,6 +518,10 @@ int main()
     printf("\nRemora PRU - Programmable Realtime Unit \n");
     printf("\n Mbed-OS6 \n");
     printf("\n Remora-spi Driver \n");
+
+#if REMORA_DEBUG
+    debugBootInfo();
+#endif
 
     watchdog.start(2000);
 
@@ -501,6 +542,10 @@ int main()
         comms->SPItasks();
         continue;
     }
+#endif
+
+#if REMORA_DEBUG
+    debugLinkReport(currentState);
 #endif
 
     switch(currentState){
