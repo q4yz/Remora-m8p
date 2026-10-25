@@ -30,14 +30,12 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "SDIOBlockDevice.h"
 #endif
 
-// SD card upload over SPI, for the STM32F4 boards with an SDIO card slot
-#if defined(TARGET_STM32F4) && (defined(TARGET_SKRV2) || defined(TARGET_OCTOPUS_446) || defined(TARGET_BLACK_F407VE) || defined(TARGET_OCTOPUS_429))
-#define SD_UPLOAD
-#include "sdUpload.h"
-#endif
-
 #include "configuration.h"
 #include "remora.h"
+
+#ifdef SD_UPLOAD
+#include "sdUpload.h"
+#endif
 
 // libraries
 #include "ArduinoJson.h"
@@ -160,8 +158,10 @@ volatile uint16_t* ptrOutputs;
     RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData, SPI2, PB_12);    // use PB_12 as "slave select" on SPI2
 
 #elif defined TARGET_MANTA8
+    // BTT Manta M8P V1.0 / V1.1: MCU SD card on SPI1 (shared with the TMC drivers), CS PA_8
     SDBlockDevice blockDevice(PA_7, PA_6, PA_5, PA_8);  // mosi, miso, sclk, cs
-    RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData, SPI1, PB_12);    // use PB_12 as "slave select"
+    // Raspberry Pi / CM4 link on SPI2 via the EXP2 header, hardware NSS on PB_12
+    RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData, SPI2, PB_12);
 
 #endif
 
@@ -262,8 +262,13 @@ void setup()
     blockDevice.deinit();
     #endif
 
-    #if defined TARGET_SKR_MINI_E3 | TARGET_MANTA8
+    #if defined TARGET_SKR_MINI_E3
     // remove the SD device as we are sharing the SPI with the comms module
+    blockDevice.deinit();
+    #endif
+
+    #if defined TARGET_MANTA8
+    // release the SD card, its SPI bus is shared with the TMC drivers
     blockDevice.deinit();
     #endif
 

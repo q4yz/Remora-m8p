@@ -21,6 +21,26 @@ void TIM2_IRQHandler()
   }
 }
 
+void TIM6_IRQHandler()
+{
+  if(TIM6->SR & TIM_SR_UIF) // if UIF flag is set
+  {
+    TIM6->SR &= ~TIM_SR_UIF; // clear UIF flag
+
+    Interrupt::TIM6_Wrapper();
+  }
+}
+
+void TIM7_IRQHandler()
+{
+  if(TIM7->SR & TIM_SR_UIF) // if UIF flag is set
+  {
+    TIM7->SR &= ~TIM_SR_UIF; // clear UIF flag
+
+    Interrupt::TIM7_Wrapper();
+  }
+}
+
 void TIM3_IRQHandler()
 {
   if(TIM3->SR & TIM_SR_UIF) // if UIF flag is set

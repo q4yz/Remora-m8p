@@ -5,9 +5,10 @@ existing Raspberry Pi SPI link, so the card does not have to be taken out of the
 board. Only works while LinuxCNC is **not** running, since LinuxCNC owns the
 SPI link.
 
-Supported boards: STM32F4 boards with an SDIO card slot running Remora-OS6
-firmware built with SD upload support (BTT Octopus / Octopus Pro F446 and F429,
-BTT SKR v2, Black F407VE). The first firmware with this feature has to be put
+Supported boards: Remora-OS6 firmware built with SD upload support (`SD_UPLOAD`
+in `configuration.h`): the STM32F4 boards with an SDIO card slot (BTT Octopus /
+Octopus Pro F446 and F429, BTT SKR v2, Black F407VE) and the BTT Manta M8P
+V1.0 / V1.1 (STM32G0B1). The first firmware with this feature has to be put
 on the card the usual way.
 
 ## Build
@@ -34,6 +35,21 @@ sudo ./remora-upload -k config.txt && sudo ./remora-upload firmware.bin
 
 Options: `-d DEV` spidev device (default `/dev/spidev0.0`), `-s HZ` SPI clock
 (default 4 MHz), `-k` do not reboot afterwards, `-f` skip the LinuxCNC check.
+
+## Example script
+
+`reflash.sh` wraps the tool for the usual update: it builds `remora-upload` if
+needed, checks that LinuxCNC is stopped, the SPI device exists and a config is
+valid JSON, uploads the files with a single reboot and waits for the bootloader.
+
+```
+./reflash.sh firmware.bin              # new firmware
+./reflash.sh config.txt                # new configuration
+./reflash.sh firmware.bin config.txt   # both
+./reflash.sh -n config.txt my.json     # upload my.json as config.txt
+```
+
+`SPI_DEV`, `SPI_SPEED` and `REMORA_UPLOAD` override the device, clock and tool path.
 
 ## How it works
 

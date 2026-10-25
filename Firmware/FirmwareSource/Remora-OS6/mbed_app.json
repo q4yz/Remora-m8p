@@ -32,7 +32,7 @@
             "target.features_add": ["STORAGE"],
             "sd.SPI_MOSI": "PA_7",
             "sd.SPI_MISO": "PA_6",
-            "sd.SPI_CLK":  "PA_4",
+            "sd.SPI_CLK":  "PA_5",
             "sd.SPI_CS":   "PA_8",
             "target.components_add" : ["SD"]
         },

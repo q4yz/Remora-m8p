@@ -28,6 +28,16 @@ void Interrupt::TIM2_Wrapper(void)
 	ISRVectorTable[TIM2_IRQn]->ISR_Handler();
 }
 
+void Interrupt::TIM6_Wrapper(void)
+{
+	ISRVectorTable[TIM6_DAC_LPTIM1_IRQn]->ISR_Handler();
+}
+
+void Interrupt::TIM7_Wrapper(void)
+{
+	ISRVectorTable[TIM7_LPTIM2_IRQn]->ISR_Handler();
+}
+
 void Interrupt::TIM3_Wrapper(void)
 {
 	ISRVectorTable[TIM3_TIM4_IRQn]->ISR_Handler();

@@ -23,6 +23,13 @@
 #define PRU_ESTOP           0x65737470      // "estp" SPI payload
 #define PRU_UPLOAD          0x75706c64      // "upld" SPI payload - SD card file upload while LinuxCNC is offline
 
+// Boards supporting the SD card upload over SPI (drivers/sdUpload): the STM32F4 boards with an SDIO
+// card slot, and the Manta M8P whose SD card has its own SPI bus
+#if (defined(TARGET_STM32F4) && (defined(TARGET_SKRV2) || defined(TARGET_OCTOPUS_446) || defined(TARGET_BLACK_F407VE) || defined(TARGET_OCTOPUS_429))) \
+    || defined(TARGET_MANTA8)
+#define SD_UPLOAD
+#endif
+
 
 // Serial configuration
 #define TXD0                P0_2            // MBED pin number

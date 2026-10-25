@@ -1,0 +1,141 @@
+{
+	"Board": "BIGTREETECH MANTA M8P V1.0 / V1.1",
+	"Modules":[
+	{
+	"Thread": "Servo",
+	"Type": "Reset Pin",
+		"Comment":			"Reset pin - EXP2 pin 3, wire to Raspberry Pi GPIO25",
+		"Pin":				"PF_7"
+	},
+	{
+	"Thread": "Base",
+	"Type": "Stepgen",
+		"Comment":			"X M1 - Joint 0 step generator",
+		"Joint Number":		0,
+		"Step Pin": 		"PE_2",
+		"Direction Pin": 	"PB_4",
+		"Enable Pin": 		"PC_11"
+	},
+	{
+	"Thread": "Base",
+	"Type": "Stepgen",
+		"Comment":			"Y M2 - Joint 1 step generator",
+		"Joint Number":		1,
+		"Step Pin": 		"PF_12",
+		"Direction Pin": 	"PF_11",
+		"Enable Pin": 		"PB_3"
+	},
+	{
+	"Thread": "Base",
+	"Type": "Stepgen",
+		"Comment":			"Z M3 - Joint 2 step generator",
+		"Joint Number":		2,
+		"Step Pin": 		"PD_7",
+		"Direction Pin": 	"PD_6",
+		"Enable Pin": 		"PF_10"
+	},
+	{
+	"Thread": "Base",
+	"Type": "Stepgen",
+		"Comment":			"A M4 - Joint 3 step generator",
+		"Joint Number":		3,
+		"Step Pin": 		"PD_3",
+		"Direction Pin": 	"PD_2",
+		"Enable Pin": 		"PD_5"
+	},
+	{
+	"Thread": "Servo",
+	"Type": "Digital Pin",
+		"Comment":			"X endstop MIN1",
+		"Pin":				"PF_3",
+		"Mode":				"Input",
+		"Modifier":			"Pull Up",
+		"Invert":			"False",
+		"Data Bit":			0
+	},
+	{
+	"Thread": "Servo",
+	"Type": "Digital Pin",
+		"Comment":			"Y endstop MIN2",
+		"Pin":				"PF_4",
+		"Mode":				"Input",
+		"Modifier":			"Pull Up",
+		"Invert":			"False",
+		"Data Bit":			1
+	},
+	{
+	"Thread": "Servo",
+	"Type": "Digital Pin",
+		"Comment":			"Z endstop MIN3",
+		"Pin":				"PF_5",
+		"Mode":				"Input",
+		"Modifier":			"Pull Up",
+		"Invert":			"False",
+		"Data Bit":			2
+	},
+	{
+	"Thread": "Servo",
+	"Type": "Digital Pin",
+		"Comment":			"A endstop MIN4",
+		"Pin":				"PC_0",
+		"Mode":				"Input",
+		"Modifier":			"Pull Up",
+		"Invert":			"False",
+		"Data Bit":			3
+	},
+	{
+	"Thread": "Servo",
+	"Type": "Temperature",
+		"Comment": 			"Heated bed temperature sensor TB",
+		"PV[i]": 			0,
+		"Sensor": 			"Thermistor",
+			"Thermistor":
+			{
+				"Pin": 		"PA_0",
+				"beta": 	3950,
+				"r0": 		100000,
+				"t0": 		25
+			}
+	},
+	{
+	"Thread": "Servo",
+	"Type": "PWM",
+		"Comment": 			"Heated bed PWM BED-OUT",
+		"SP[i]": 			0,
+		"Hardware PWM":		"False",
+		"PWM Pin": 			"PB_7",
+		"Safe Duty":		0
+	},
+	{
+	"Thread": "Servo",
+	"Type": "Temperature",
+		"Comment": 			"HE0 temperature sensor TH0",
+		"PV[i]": 			1,
+		"Sensor": 			"Thermistor",
+			"Thermistor":
+			{
+				"Pin": 		"PA_1",
+				"beta": 	3950,
+				"r0": 		100000,
+				"t0": 		25
+			}
+	},
+	{
+	"Thread": "Servo",
+	"Type": "PWM",
+		"Comment": 			"HE0 heater PWM",
+		"SP[i]": 			1,
+		"Hardware PWM":		"False",
+		"PWM Pin": 			"PE_3",
+		"Safe Duty":		0
+	},
+	{
+	"Thread": "Servo",
+	"Type": "PWM",
+		"Comment": 			"FAN0 PWM",
+		"SP[i]": 			2,
+		"Hardware PWM":		"False",
+		"PWM Pin": 			"PE_6"
+	}
+	]
+}

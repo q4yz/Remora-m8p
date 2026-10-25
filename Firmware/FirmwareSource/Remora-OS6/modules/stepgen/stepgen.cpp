@@ -46,7 +46,11 @@ Stepgen::Stepgen(int32_t threadFreq, int jointNumber, std::string enable, std::s
 	this->directionPin = new Pin(this->direction, OUTPUT);
     this->rawCount = 0;
 	this->DDSaccumulator = 0;
-	this->frequencyScale = (float)(1 << this->stepBit) / (float)threadFreq;
+	this->frequencyCommand = 0;
+	this->DDSaddValue = 0;
+	// DDS add value per Hz in 32.32 fixed point, keeps floating point maths out of the base thread
+	// (the Cortex-M0+ of the STM32G0 has no FPU)
+	this->frequencyScale = ((int64_t)1 << (this->stepBit + 32)) / threadFreq;
 	this->mask = 1 << this->jointNumber;
 	this->isEnabled = false;
 	this->isForward = false;
@@ -79,8 +83,13 @@ void Stepgen::makePulses()
 	{
 		this->enablePin->set(false);                                			// Enable the driver - CHANGE THIS TO MAKE THE OUTPUT VALUE CONFIGURABLE???
 
-		this->frequencyCommand = *(this->ptrFrequencyCommand);            		// Get the latest frequency command via pointer to the data source
-		this->DDSaddValue = this->frequencyCommand * this->frequencyScale;		// Scale the frequency command to get the DDS add value
+		int32_t command = *(this->ptrFrequencyCommand);            				// Get the latest frequency command via pointer to the data source
+		if (command != this->frequencyCommand)									// it only changes once per servo period, rescale only then
+		{
+			this->frequencyCommand = command;
+			int64_t addValue = (int64_t)command * this->frequencyScale;			// Scale the frequency command to get the DDS add value,
+			this->DDSaddValue = (int32_t)(addValue >= 0 ? addValue >> 32 : -((-addValue) >> 32));	// truncated towards zero
+		}
 		stepNow = this->DDSaccumulator;                           				// Save the current DDS accumulator value
 		this->DDSaccumulator += this->DDSaddValue;           	  				// Update the DDS accumulator with the new add value
 		stepNow ^= this->DDSaccumulator;                          				// Test for changes in the low half of the DDS accumulator

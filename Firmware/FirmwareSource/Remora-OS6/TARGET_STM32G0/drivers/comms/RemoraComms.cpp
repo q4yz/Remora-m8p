@@ -3,188 +3,251 @@
 
 #include "stm32g0xx_hal.h"
 
+/***********************************************************************
+    SPI slave link to the Raspberry Pi for STM32G0 boards
+
+    SPI2 with hardware NSS on PB12 (SCK PB13, MISO PB14, MOSI PB11), on the
+    BTT Manta M8P these are the EXP2 header pins 4, 2, 1 and 6.
+
+    Same scheme as the STM32F4 driver: both DMA channels run in circular mode
+    over the 64 byte frame, the rising edge of NSS flags the end of a frame
+    and SPItasks(), called from the main loop, checks the header and copies
+    the data. On the G0 the DMA channels are connected to the SPI through
+    the DMAMUX, so the requests have to be set explicitly.
+************************************************************************/
+
 RemoraComms::RemoraComms(volatile rxData_t* ptrRxData, volatile txData_t* ptrTxData, SPI_TypeDef* spiType, PinName interruptPin) :
+    spiType(spiType),
     ptrRxData(ptrRxData),
     ptrTxData(ptrTxData),
-    spiType(spiType),
     interruptPin(interruptPin),
     slaveSelect(interruptPin)
 {
     this->spiHandle.Instance = this->spiType;
+    this->noDataCount = 0;
+    this->rejectCnt = 0;
+    this->NSS = false;
+    this->resetSPI = false;
+    this->data = false;
+    this->CommsStatus = false;
+    this->SPIdataError = false;
+    this->uploadFrame = false;
+    this->uploadMode = false;
 
-    if (this->interruptPin == PB_12)
+    if (this->spiType != SPI2 || this->interruptPin != PB_12)
     {
-        // interrupt pin is the NSS pin
-        sharedSPI = false;
-        HAL_NVIC_SetPriority(EXTI4_15_IRQn, 5, 0);
-    }
-    else if (this->interruptPin == PA_15)
-    {
-        // interrupt pin is not the NSS pin, ie the board shares the SPI bus with the SD card
-        // configure the SPI in software NSS mode and always on
-        sharedSPI = true;
-        HAL_NVIC_SetPriority(EXTI4_15_IRQn , 5, 0);
+        printf("Error - STM32G0 Remora comms only supports SPI2 with NSS on PB_12\n");
     }
 
-
-    slaveSelect.rise(callback(this, &RemoraComms::processPacket));  
+    // Cortex-M0+ has 4 priority levels, keep the NSS edge below the base thread
+    slaveSelect.rise(callback(this, &RemoraComms::NSSinterrupt));
+    HAL_NVIC_SetPriority(EXTI4_15_IRQn, 3, 0);
 }
 
+
+void RemoraComms::update()
+{
+    if (this->data)
+    {
+        this->noDataCount = 0;
+        this->CommsStatus = true;
+    }
+    else
+    {
+        this->noDataCount++;
+    }
+
+    if (this->noDataCount > DATA_ERR_MAX)
+    {
+        this->noDataCount = 0;
+        this->CommsStatus = false;
+    }
+
+    this->data = false;
+}
 
 
 void RemoraComms::init()
 {
-    if(this->spiHandle.Instance == SPI2)
-    {
-        printf("Initialising SPI2 slave\n");
+    if (this->spiHandle.Instance != SPI2) return;
 
-        GPIO_InitTypeDef GPIO_InitStruct;
+    printf("Initialising SPI2 slave\n");
 
-        /**SPI1 GPIO Configuration
-        PB12     ------> SPI2_NSS
-        PB13     ------> SPI2_SCK
-        PB14     ------> SPI2_MISO
-        PB11     ------> SPI2_MOSI
-        */
+    __HAL_RCC_GPIOB_CLK_ENABLE();
 
-        GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_11;
-        GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    /**SPI2 GPIO Configuration
+    PB12     ------> SPI2_NSS
+    PB13     ------> SPI2_SCK
+    PB14     ------> SPI2_MISO
+    PB11     ------> SPI2_MOSI
+    */
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitStruct.Pin = GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF0_SPI2;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-        GPIO_InitStruct.Pin = GPIO_PIN_14;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-        HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    __HAL_RCC_SPI2_CLK_ENABLE();
 
-        __HAL_RCC_SPI2_CLK_ENABLE();
+    this->spiHandle.Init.Mode              = SPI_MODE_SLAVE;
+    this->spiHandle.Init.Direction         = SPI_DIRECTION_2LINES;
+    this->spiHandle.Init.DataSize          = SPI_DATASIZE_8BIT;
+    this->spiHandle.Init.CLKPolarity       = SPI_POLARITY_LOW;
+    this->spiHandle.Init.CLKPhase          = SPI_PHASE_1EDGE;
+    this->spiHandle.Init.NSS               = SPI_NSS_HARD_INPUT;
+    this->spiHandle.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+    this->spiHandle.Init.FirstBit          = SPI_FIRSTBIT_MSB;
+    this->spiHandle.Init.TIMode            = SPI_TIMODE_DISABLE;
+    this->spiHandle.Init.CRCCalculation    = SPI_CRCCALCULATION_DISABLE;
+    this->spiHandle.Init.CRCPolynomial     = 7;
+    this->spiHandle.Init.CRCLength         = SPI_CRC_LENGTH_DATASIZE;
+    this->spiHandle.Init.NSSPMode          = SPI_NSS_PULSE_DISABLE;
 
-        this->spiHandle.Init.Mode           = SPI_MODE_SLAVE;
-        this->spiHandle.Init.Direction      = SPI_DIRECTION_2LINES;
-        this->spiHandle.Init.DataSize       = SPI_DATASIZE_8BIT;
-        this->spiHandle.Init.CLKPolarity    = SPI_POLARITY_LOW;
-        this->spiHandle.Init.CLKPhase       = SPI_PHASE_1EDGE;
-        if (sharedSPI)
-        {
-            this->spiHandle.Init.NSS            = SPI_NSS_SOFT;
-            printf("SPI is shared with SD card\n");
-        }
-        else
-        {
-            this->spiHandle.Init.NSS            = SPI_NSS_HARD_INPUT;
-        }
-        this->spiHandle.Init.BaudRatePrescaler        = SPI_BAUDRATEPRESCALER_2;
-        this->spiHandle.Init.FirstBit       = SPI_FIRSTBIT_MSB;
-        this->spiHandle.Init.TIMode         = SPI_TIMODE_DISABLE;
-        this->spiHandle.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-        this->spiHandle.Init.CRCPolynomial  = 10;
+    HAL_SPI_Init(&this->spiHandle);
 
-        HAL_SPI_Init(&this->spiHandle);
+    printf("Initialising DMA for SPI2\n");
 
-        if (sharedSPI)
-        {
-            // set SSI (Slave Select Internal) low, ie same as NSS going low
-             CLEAR_BIT(this->spiHandle.Instance->CR1, SPI_CR1_SSI);
-        }
- 
-        printf("Initialising DMA for SPI\n");
+    __HAL_RCC_DMA1_CLK_ENABLE();
 
-        __HAL_RCC_GPIOB_CLK_ENABLE();
-        __HAL_RCC_DMA1_CLK_ENABLE();
+    this->hdma_spi_tx.Instance                 = DMA1_Channel3;
+    this->hdma_spi_tx.Init.Request             = DMA_REQUEST_SPI2_TX;
+    this->hdma_spi_tx.Init.Direction           = DMA_MEMORY_TO_PERIPH;
+    this->hdma_spi_tx.Init.PeriphInc           = DMA_PINC_DISABLE;
+    this->hdma_spi_tx.Init.MemInc              = DMA_MINC_ENABLE;
+    this->hdma_spi_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    this->hdma_spi_tx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
+    this->hdma_spi_tx.Init.Mode                = DMA_CIRCULAR;
+    this->hdma_spi_tx.Init.Priority            = DMA_PRIORITY_VERY_HIGH;
 
-        this->hdma_spi_tx.Instance                   = DMA1_Channel3;
-        this->hdma_spi_tx.Init.Direction             = DMA_MEMORY_TO_PERIPH;
-        this->hdma_spi_tx.Init.PeriphInc             = DMA_PINC_DISABLE;
-        this->hdma_spi_tx.Init.MemInc                = DMA_MINC_ENABLE;
-        this->hdma_spi_tx.Init.PeriphDataAlignment   = DMA_PDATAALIGN_BYTE;
-        this->hdma_spi_tx.Init.MemDataAlignment      = DMA_MDATAALIGN_BYTE;
-        this->hdma_spi_tx.Init.Mode                  = DMA_CIRCULAR;
-        //this->hdma_spi_tx.Init.Mode                  = DMA_NORMAL;
-        this->hdma_spi_tx.Init.Priority              = DMA_PRIORITY_VERY_HIGH;
-        
-         HAL_DMA_Init(&this->hdma_spi_tx);
+    HAL_DMA_Init(&this->hdma_spi_tx);
+    __HAL_LINKDMA(&this->spiHandle, hdmatx, this->hdma_spi_tx);
 
-        __HAL_LINKDMA(&this->spiHandle, hdmatx, this->hdma_spi_tx);
+    this->hdma_spi_rx.Instance                 = DMA1_Channel2;
+    this->hdma_spi_rx.Init.Request             = DMA_REQUEST_SPI2_RX;
+    this->hdma_spi_rx.Init.Direction           = DMA_PERIPH_TO_MEMORY;
+    this->hdma_spi_rx.Init.PeriphInc           = DMA_PINC_DISABLE;
+    this->hdma_spi_rx.Init.MemInc              = DMA_MINC_ENABLE;
+    this->hdma_spi_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    this->hdma_spi_rx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
+    this->hdma_spi_rx.Init.Mode                = DMA_CIRCULAR;
+    this->hdma_spi_rx.Init.Priority            = DMA_PRIORITY_VERY_HIGH;
 
-        //HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
-        ///NVIC_SetVector(DMA1_Channel3_IRQn, (uint32_t)&DMA1_Channel3_IRQHandler);
-        //HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+    HAL_DMA_Init(&this->hdma_spi_rx);
+    __HAL_LINKDMA(&this->spiHandle, hdmarx, this->hdma_spi_rx);
 
-        this->hdma_spi_rx.Instance                   = DMA1_Channel2;
-        this->hdma_spi_rx.Init.Direction             = DMA_PERIPH_TO_MEMORY;
-        this->hdma_spi_rx.Init.PeriphInc             = DMA_PINC_DISABLE;
-        this->hdma_spi_rx.Init.MemInc                = DMA_MINC_ENABLE;
-        this->hdma_spi_rx.Init.PeriphDataAlignment   = DMA_PDATAALIGN_BYTE;
-        this->hdma_spi_rx.Init.MemDataAlignment      = DMA_MDATAALIGN_BYTE;
-        this->hdma_spi_rx.Init.Mode                  = DMA_CIRCULAR;
-        //this->hdma_spi_rx.Init.Mode                  = DMA_NORMAL;
-        this->hdma_spi_rx.Init.Priority              = DMA_PRIORITY_VERY_HIGH;
-
-        HAL_DMA_Init(&this->hdma_spi_rx);
-
-        __HAL_LINKDMA(&this->spiHandle,hdmarx,this->hdma_spi_rx);
-
-        //HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
-        //NVIC_SetVector(DMA1_Channel2_IRQn, (uint32_t)&DMA1_Channel2_IRQHandler);
-        //HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
-    }
+    // the DMA runs without interrupts, the frame end is detected with the NSS edge
 }
+
 
 void RemoraComms::start()
 {
     this->ptrTxData->header = PRU_DATA;
     HAL_SPI_TransmitReceive_DMA(&this->spiHandle, (uint8_t *)this->ptrTxData->txBuffer, (uint8_t *)this->spiRxBuffer.rxBuffer, SPI_BUFF_SIZE);
+
+    // HAL enables the DMA interrupts for its callbacks, they are not used and the NVIC lines stay off
+    HAL_NVIC_DisableIRQ(DMA1_Channel2_3_IRQn);
 }
 
-void RemoraComms::processPacket()
+
+void RemoraComms::NSSinterrupt()
 {
-    switch (this->spiRxBuffer.header)
+    // NSS / CS has gone high, packet received
+    this->NSS = true;
+}
+
+
+void RemoraComms::SPItasks()
+{
+    if (this->NSS)
     {
-      case PRU_READ:
-        this->SPIdata = true;
-        this->rejectCnt = 0;
-        // READ so do nothing with the received data
-        break;
+        this->NSS = false;
 
-      case PRU_WRITE:
-        this->SPIdata = true;
-        this->rejectCnt = 0;
-        // we've got a good WRITE header, move the data to rxData
+        this->DMArxCnt = 0;
+        this->ticksStart = HAL_GetTick();
 
-        // **** would like to use DMA for this but cannot when the stream is in CIRCULAR mode for the SPI transfer ****
-        // TODO: figure out how to use NORMAL mode for SPI...
-        //this->status = HAL_DMA_Start(&hdma_memtomem_dma2_stream1, (uint32_t)&this->spiRxBuffer.rxBuffer, (uint32_t)this->rxData->rxBuffer, SPI_BUFF_SIZE);
-        //if (this->status != HAL_OK) printf("F\n");
-
-        // Do it the slower way. This does not seem to impact performance but not great to stay in ISR context for longer.. :-(
-        for (int i = 0; i < SPI_BUFF_SIZE; i++)
+        // wait for DMA to complete and break if DMA is not complete in time
+        while (this->DMArxCnt != SPI_BUFF_SIZE)
         {
-            this->ptrRxData->rxBuffer[i] = this->spiRxBuffer.rxBuffer[i];
+            this->DMArxCnt = __HAL_DMA_GET_COUNTER(&this->hdma_spi_rx);
+            this->ticks = HAL_GetTick() - this->ticksStart;
+
+            if (this->ticks > 2)
+            {
+                this->resetSPI = true;
+                break;
+            }
         }
 
-        break;
-
-      default:
-        this->rejectCnt++;
-        if (this->rejectCnt > 5)
+        if (this->resetSPI)
         {
-            this->SPIdataError = true;
+            this->resetSPI = false;
+
+            if (this->uploadMode)
+            {
+                // the frame boundary has been lost (DMA restarted mid transfer), drop the frame and re-align
+                this->restartDMA();
+                return;
+            }
+
+            // for testing, not needed / implemented
+            printf("  Reset SPI now\n");
         }
-        // reset SPI somehow
+
+        switch (this->spiRxBuffer.header)
+        {
+            case PRU_READ:
+                this->data = true;
+                this->rejectCnt = 0;
+                // READ so do nothing with the received data
+                break;
+
+            case PRU_WRITE:
+                this->data = true;
+                this->rejectCnt = 0;
+
+                // we've got a good WRITE header, move the data to rxData
+                // ensure an atomic access to the rxBuffer
+                __disable_irq();
+
+                for (int i = 0; i < SPI_BUFF_SIZE; i++)
+                {
+                    this->ptrRxData->rxBuffer[i] = this->spiRxBuffer.rxBuffer[i];
+                }
+
+                __enable_irq();
+                break;
+
+            case PRU_UPLOAD:
+                this->rejectCnt = 0;
+                // copy the frame now, before the next transfer overwrites the DMA buffer
+                for (int i = 0; i < SPI_BUFF_SIZE; i++)
+                {
+                    this->uploadRxBuffer.rxBuffer[i] = this->spiRxBuffer.rxBuffer[i];
+                }
+                this->uploadFrame = true;
+                break;
+
+            default:
+                this->rejectCnt++;
+                if (this->rejectCnt > 5)
+                {
+                    this->SPIdataError = true;
+                }
+        }
     }
-
-    HAL_SPI_TransmitReceive_DMA(&this->spiHandle, (uint8_t *)this->ptrTxData->txBuffer, (uint8_t *)this->spiRxBuffer.rxBuffer, SPI_BUFF_SIZE);
 }
 
 
 bool RemoraComms::getStatus(void)
 {
-    return this->SPIdata;
+    return this->CommsStatus;
 }
 
 void RemoraComms::setStatus(bool status)
 {
-    this->SPIdata = status;
+    this->CommsStatus = status;
 }
 
 bool RemoraComms::getError(void)
@@ -195,4 +258,46 @@ bool RemoraComms::getError(void)
 void RemoraComms::setError(bool error)
 {
     this->SPIdataError = error;
+}
+
+bool RemoraComms::getUploadFrame(uint8_t* frame)
+{
+    if (!this->uploadFrame) return false;
+
+    for (int i = 0; i < SPI_BUFF_SIZE; i++)
+    {
+        frame[i] = this->uploadRxBuffer.rxBuffer[i];
+    }
+    this->uploadFrame = false;
+    return true;
+}
+
+void RemoraComms::setUploadMode(bool mode)
+{
+    this->uploadMode = mode;
+}
+
+void RemoraComms::stopDMA()
+{
+    // the SD card has its own SPI bus here, pausing just keeps the frames in step with the main loop
+    HAL_SPI_DMAStop(&this->spiHandle);
+}
+
+void RemoraComms::restartDMA()
+{
+    HAL_SPI_DMAStop(&this->spiHandle);
+
+    // wait for the master to finish any transfer in progress so the next frame starts on a boundary
+    uint32_t start = HAL_GetTick();
+    while (!this->slaveSelect.read() && (HAL_GetTick() - start) < 10) {}
+
+    // reset the SPI peripheral to empty its FIFOs and clear the overrun flag
+    __HAL_RCC_SPI2_FORCE_RESET();
+    __HAL_RCC_SPI2_RELEASE_RESET();
+
+    // re-initialise the SPI and DMA handles without resetting the TX buffer header like start() does
+    this->init();
+    this->NSS = false;
+    HAL_SPI_TransmitReceive_DMA(&this->spiHandle, (uint8_t *)this->ptrTxData->txBuffer, (uint8_t *)this->spiRxBuffer.rxBuffer, SPI_BUFF_SIZE);
+    HAL_NVIC_DisableIRQ(DMA1_Channel2_3_IRQn);
 }

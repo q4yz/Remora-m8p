@@ -1,6 +1,10 @@
 #ifndef SDUPLOAD_H
 #define SDUPLOAD_H
 
+#include "configuration.h"
+
+#ifdef SD_UPLOAD
+
 #include "mbed.h"
 #include "FATFileSystem.h"
 
@@ -18,10 +22,16 @@
     sequence number comes back. All frames are 64 bytes and end with a
     CRC-32 of the first 60 bytes. Multi-byte fields are little endian.
 
-    The SD card (SDIO) shares DMA2 stream 3 with the SPI1 TX DMA, so the SPI
-    DMA is stopped while the card is accessed. Data is buffered in RAM and
-    written in UPLOAD_BUF_SIZE blocks to keep these pauses rare; the host
-    simply re-sends a command it got no reply for.
+    The comms DMA is stopped while the card is accessed and restarted on a
+    frame boundary afterwards (RemoraComms::stopDMA / restartDMA). On the
+    STM32F4 SDIO boards this is required, the SDIO shares DMA2 stream 3 with
+    the SPI1 TX DMA; on the Manta M8P the card has its own SPI bus and the
+    pause only keeps the main loop and the comms in step. Data is buffered in
+    RAM and written in UPLOAD_BUF_SIZE blocks to keep these pauses rare; the
+    host simply re-sends a command it got no reply for.
+
+    Each target's RemoraComms provides the PRU_UPLOAD frame hand-off
+    (getUploadFrame), setUploadMode, stopDMA and restartDMA.
 
     The file is written to upload.tmp, read back and CRC checked, and only
     then renamed to its final name. Leaving upload mode always reboots the
@@ -134,5 +144,7 @@ class SDUpload
 
         static uint32_t crc32(uint32_t crc, const uint8_t* data, uint32_t len);
 };
+
+#endif // SD_UPLOAD
 
 #endif

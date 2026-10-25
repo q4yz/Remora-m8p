@@ -1,5 +1,7 @@
 #include "sdUpload.h"
 
+#ifdef SD_UPLOAD
+
 #include <string.h>
 
 #define UPLOAD_TMP_PATH     "/fs/upload.tmp"
@@ -235,7 +237,7 @@ uint8_t SDUpload::writeToCard(bool finish)
     Watchdog& watchdog = Watchdog::get_instance();
     uint8_t error = UPLOAD_ERR_NONE;
 
-    // the SDIO RX DMA shares a stream with the SPI TX DMA
+    // pause the comms DMA while the card is in use (on the F4 the SDIO RX DMA shares a stream with the SPI TX DMA)
     this->comms->stopDMA();
     watchdog.kick();
 
@@ -348,3 +350,5 @@ uint32_t SDUpload::crc32(uint32_t crc, const uint8_t* data, uint32_t len)
     }
     return ~crc;
 }
+
+#endif // SD_UPLOAD

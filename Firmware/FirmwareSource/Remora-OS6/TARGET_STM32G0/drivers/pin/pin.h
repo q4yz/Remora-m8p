@@ -51,20 +51,21 @@ class Pin
         void pull_down();
         PinName pinToPinName();
 
+        // direct register access, the HAL calls are noticeable in the base thread on the Cortex-M0+
         inline bool get()
         {
-            return HAL_GPIO_ReadPin(this->GPIOx, this->pin);
+            return (this->GPIOx->IDR & this->pin) != 0;
         }
 
         inline void set(bool value)
         {
             if (value)
             {
-                HAL_GPIO_WritePin(this->GPIOx, this->pin, GPIO_PIN_SET);
+                this->GPIOx->BSRR = this->pin;
             }
             else
             {
-                HAL_GPIO_WritePin(this->GPIOx, this->pin, GPIO_PIN_RESET);
+                this->GPIOx->BRR = this->pin;
             }
         }
 };

@@ -50,9 +50,33 @@ void pruTimer::startTimer(void)
     }
     else if (this->timer == TIM3)
     {
-        printf("	power on Timer 30\n\r");
+        printf("	power on Timer 3\n\r");
         __HAL_RCC_TIM3_CLK_ENABLE();
         TIM_CLK = APB1CLK;
+    }
+    else if (this->timer == TIM6)
+    {
+        printf("	power on Timer 6\n\r");
+        __HAL_RCC_TIM6_CLK_ENABLE();
+        TIM_CLK = APB1CLK;
+    }
+    else if (this->timer == TIM7)
+    {
+        printf("	power on Timer 7\n\r");
+        __HAL_RCC_TIM7_CLK_ENABLE();
+        TIM_CLK = APB1CLK;
+    }
+    else
+    {
+        printf("	Error - unsupported thread timer\n\r");
+        return;
+    }
+
+    if (TIM_CLK / TIM_PSC / this->frequency > 0x10000 && this->timer != TIM2)
+    {
+        // TIM3, TIM6 and TIM7 are 16 bit, at 64 MHz the lowest thread frequency is 977 Hz
+        printf("	Error - thread frequency %lu Hz too low for a 16 bit timer\n\r", (unsigned long)this->frequency);
+        return;
     }
 
 

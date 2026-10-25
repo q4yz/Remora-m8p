@@ -68,7 +68,7 @@ void Pin::configPin()
     printf("Creating Pin @\n");
 
     //x can be (A..H) to select the GPIO peripheral for STM32F40XX and STM32F427X devices.
-    GPIO_TypeDef* gpios[5] ={GPIOA,GPIOB,GPIOC,GPIOD,GPIOE};
+    GPIO_TypeDef* gpios[6] ={GPIOA,GPIOB,GPIOC,GPIOD,GPIOE,GPIOF};
     
 
     if (this->portAndPin[0] == 'P') // PXXX e.g.PA2 PC15
@@ -93,6 +93,12 @@ void Pin::configPin()
     printf("  port = GPIO%c\n", char('A' + this->portIndex));
     printf("  pin = %d\n", this->pinNumber);
 
+    if (this->portIndex > 5)
+    {
+        printf("  Invalid port, the STM32G0 has ports A to F\n");
+        return;
+    }
+
     // translate port index into something useful
     this->GPIOx = gpios[this->portIndex];
 
@@ -116,6 +122,10 @@ void Pin::configPin()
 
         case 4:
             __HAL_RCC_GPIOE_CLK_ENABLE();
+            break;
+
+        case 5:
+            __HAL_RCC_GPIOF_CLK_ENABLE();
             break;
     }
 

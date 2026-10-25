@@ -31,7 +31,7 @@ class Stepgen : public Module
     volatile int32_t *ptrFeedback;       	// pointer where to put the feedback
     volatile uint8_t *ptrJointEnable;
     int32_t DDSaccumulator;       	// Direct Digital Synthesis (DDS) accumulator
-    float   frequencyScale;		  	  // frequency scale
+    int64_t frequencyScale;		  	  // DDS add value per Hz, 32.32 fixed point
   	int32_t	DDSaddValue;		  	    // DDS accumulator add vdd value
     int32_t stepBit;                // position in the DDS accumulator that triggers a step pulse
 

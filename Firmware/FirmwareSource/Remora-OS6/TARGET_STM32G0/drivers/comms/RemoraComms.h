@@ -7,9 +7,9 @@
 
 #include "stm32g0xx_hal.h"
 
+#include "modules/module.h"
 
-
-class RemoraComms
+class RemoraComms : public Module
 {
     private:
 
@@ -17,32 +17,52 @@ class RemoraComms
         SPI_HandleTypeDef   spiHandle;
         DMA_HandleTypeDef   hdma_spi_tx;
         DMA_HandleTypeDef   hdma_spi_rx;
-        DMA_HandleTypeDef   hdma_memtomem_dma2_stream1;
-        HAL_StatusTypeDef   status;
 
         volatile rxData_t*  ptrRxData;
         volatile txData_t*  ptrTxData;
         rxData_t            spiRxBuffer;
+
+        uint8_t             noDataCount;
         uint8_t             rejectCnt;
-        bool                SPIdata;
+
+        uint8_t             DMArxCnt;
+        uint32_t            ticksStart;
+        uint32_t            ticks;
+
+        volatile bool       NSS;
+        bool                resetSPI;
+
+        volatile bool       data;
+        bool                CommsStatus;
         bool                SPIdataError;
-        
+
+        rxData_t            uploadRxBuffer;     // copy of the last SD upload frame
+        bool                uploadFrame;        // a new SD upload frame is waiting in uploadRxBuffer
+        bool                uploadMode;         // SD upload in progress, re-align the DMA on framing errors
+
         PinName             interruptPin;
         InterruptIn         slaveSelect;
-        bool                sharedSPI;
-        
-        void processPacket(void);
+
+        void NSSinterrupt(void);
 
     public:
 
         RemoraComms(volatile rxData_t*, volatile txData_t*, SPI_TypeDef*, PinName);
+
+        virtual void update(void);
+
         void init(void);
         void start(void);
+        void SPItasks(void);
         bool getStatus(void);
         void setStatus(bool);
         bool getError(void);
         void setError(bool);
 
+        bool getUploadFrame(uint8_t*);
+        void setUploadMode(bool);
+        void stopDMA(void);
+        void restartDMA(void);
 };
 
 #endif
