@@ -470,6 +470,10 @@ void debugThreadLow()
 #if REMORA_DEBUG
 // Debug output on the console UART (Manta M8P: EXP2 pin 7, 115200 baud)
 
+#if defined(TARGET_MANTA8)
+#include "rawConsole.h"     // register level console, replaces the mbed serial console in debug builds
+#endif
+
 void debugBootInfo()
 {
     printf("[debug] SystemCoreClock %lu Hz, reset cause:", (unsigned long)SystemCoreClock);
@@ -509,6 +513,10 @@ int main()
     
     enum State currentState;
     enum State prevState;
+
+#if REMORA_DEBUG && defined(TARGET_MANTA8)
+    rawConsolePuts("[raw] main\n");
+#endif
 
     comms->setStatus(false);
     comms->setError(false);
