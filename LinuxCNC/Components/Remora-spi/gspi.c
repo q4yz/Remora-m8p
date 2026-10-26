@@ -45,6 +45,10 @@ static int gspi_error_reported = 0;
 static int gspi_reset_fd = -1;
 static int gspi_reset_value = -1;
 
+static int gspi_cs_fd = -1;             // optional GPIO chip select, -1: the controller's own CS
+
+static int gspi_line_set(int fd, int value);
+
 
 // Keep the SPI controller powered between transfers. With runtime PM the
 // controller may otherwise be suspended between frames and resumed by the
@@ -142,7 +146,15 @@ int gspi_transfer(const void *txbuf, void *rxbuf, uint32_t len)
     tr.speed_hz = gspi_speed;
     tr.bits_per_word = 8;
 
-    if (ioctl(gspi_fd, SPI_IOC_MESSAGE(1), &tr) < 0)
+    // GPIO chip select (CB1: the CE0 position of the header is not connected): low for the
+    // whole frame, the rising edge after it tells the Remora firmware the frame is complete
+    if (gspi_cs_fd >= 0) gspi_line_set(gspi_cs_fd, 0);
+
+    int result = ioctl(gspi_fd, SPI_IOC_MESSAGE(1), &tr);
+
+    if (gspi_cs_fd >= 0) gspi_line_set(gspi_cs_fd, 1);
+
+    if (result < 0)
     {
         // never return a stale frame, the caller rejects an invalid header
         memset(rxbuf, 0, len);
@@ -195,7 +207,8 @@ int gspi_parse_pin(const char *pin)
 }
 
 
-int gspi_reset_init(const char *chip, const char *pin)
+// Claim one GPIO line as an output with the given initial level, returns the line fd or -1
+static int gspi_claim_output(const char *chip, const char *pin, const char *what, int initial)
 {
 #ifdef GPIO_V2_GET_LINE_IOCTL
     struct gpio_v2_line_request req;
@@ -204,65 +217,99 @@ int gspi_reset_init(const char *chip, const char *pin)
     line = gspi_parse_pin(pin);
     if (line < 0)
     {
-        rtapi_print_msg(RTAPI_MSG_ERR, "gspi: invalid reset_pin '%s'\n", pin);
-        return 0;
+        rtapi_print_msg(RTAPI_MSG_ERR, "gspi: invalid %s '%s'\n", what, pin);
+        return -1;
     }
 
     chip_fd = rtapi_open_as_root(chip, O_RDWR);
     if (chip_fd < 0)
     {
         rtapi_print_msg(RTAPI_MSG_ERR, "gspi: cannot open %s: %s\n", chip, strerror(errno));
-        return 0;
+        return -1;
     }
 
     memset(&req, 0, sizeof(req));
     req.offsets[0] = line;
     req.num_lines = 1;
     req.config.flags = GPIO_V2_LINE_FLAG_OUTPUT;
-    strncpy(req.consumer, "remora-spi reset", sizeof(req.consumer) - 1);
+    // set the initial level in the same request, no glitch when the line becomes an output
+    req.config.num_attrs = 1;
+    req.config.attrs[0].attr.id = GPIO_V2_LINE_ATTR_ID_OUTPUT_VALUES;
+    req.config.attrs[0].attr.values = initial ? 1 : 0;
+    req.config.attrs[0].mask = 1;
+    snprintf(req.consumer, sizeof(req.consumer), "remora-spi %s", what);
 
     if (ioctl(chip_fd, GPIO_V2_GET_LINE_IOCTL, &req) < 0)
     {
-        rtapi_print_msg(RTAPI_MSG_ERR, "gspi: cannot claim line %d on %s: %s\n", line, chip, strerror(errno));
+        rtapi_print_msg(RTAPI_MSG_ERR, "gspi: cannot claim line %d on %s for %s: %s\n", line, chip, what, strerror(errno));
         close(chip_fd);
-        return 0;
+        return -1;
     }
     close(chip_fd);
 
-    gspi_reset_fd = req.fd;
-    gspi_reset_value = -1;
-    gspi_reset_set(0);
-
-    rtapi_print_msg(RTAPI_MSG_ERR, "gspi: PRU reset on %s line %d (%s)\n", chip, line, pin);
-    return 1;
+    rtapi_print_msg(RTAPI_MSG_ERR, "gspi: %s on %s line %d (%s)\n", what, chip, line, pin);
+    return req.fd;
 #else
-    (void)chip;
-    (void)pin;
-    rtapi_print_msg(RTAPI_MSG_ERR, "gspi: built without GPIO v2 support, the reset pin is not available\n");
-    return 0;
+    (void)chip; (void)pin; (void)initial;
+    rtapi_print_msg(RTAPI_MSG_ERR, "gspi: built without GPIO v2 support, %s is not available\n", what);
+    return -1;
 #endif
+}
+
+
+static int gspi_line_set(int fd, int value)
+{
+#ifdef GPIO_V2_GET_LINE_IOCTL
+    struct gpio_v2_line_values values;
+
+    values.bits = value ? 1 : 0;
+    values.mask = 1;
+    return ioctl(fd, GPIO_V2_LINE_SET_VALUES_IOCTL, &values);
+#else
+    (void)fd; (void)value;
+    return -1;
+#endif
+}
+
+
+int gspi_reset_init(const char *chip, const char *pin)
+{
+    gspi_reset_fd = gspi_claim_output(chip, pin, "PRU reset", 0);
+    gspi_reset_value = 0;
+    return gspi_reset_fd >= 0;
 }
 
 
 void gspi_reset_set(int value)
 {
-#ifdef GPIO_V2_GET_LINE_IOCTL
-    struct gpio_v2_line_values values;
-
     value = value ? 1 : 0;
 
     // the reset pin rarely changes, only call into the kernel on a change
     if (gspi_reset_fd < 0 || value == gspi_reset_value) return;
 
-    values.bits = value;
-    values.mask = 1;
-    if (ioctl(gspi_reset_fd, GPIO_V2_LINE_SET_VALUES_IOCTL, &values) == 0)
+    if (gspi_line_set(gspi_reset_fd, value) == 0)
     {
         gspi_reset_value = value;
     }
-#else
-    (void)value;
-#endif
+}
+
+
+int gspi_cs_init(const char *chip, const char *pin)
+{
+    // chip select is active low, idle high until the first frame
+    gspi_cs_fd = gspi_claim_output(chip, pin, "chip select", 1);
+    return gspi_cs_fd >= 0;
+}
+
+
+void gspi_cs_close(void)
+{
+    if (gspi_cs_fd >= 0)
+    {
+        gspi_line_set(gspi_cs_fd, 1);
+        close(gspi_cs_fd);
+        gspi_cs_fd = -1;
+    }
 }
 
 

@@ -29,6 +29,11 @@ int  gspi_reset_init(const char *chip, const char *pin);
 void gspi_reset_set(int value);
 void gspi_reset_close(void);
 
+// Optional chip select on a GPIO, driven low around every frame. For boards whose SPI chip
+// select is not on the header (BigTreeTech CB1: the CE0 position is not connected).
+int  gspi_cs_init(const char *chip, const char *pin);
+void gspi_cs_close(void);
+
 // parse a pin name or number into a line offset, -1 if invalid
 int  gspi_parse_pin(const char *pin);
 

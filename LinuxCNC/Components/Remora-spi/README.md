@@ -32,6 +32,8 @@ them in the same folder.
 | `spi_dev` | generic | first `/dev/spidevB.C` found | spidev device |
 | `reset_pin` | generic | none | PRU reset GPIO, line number or Allwinner name like `PH9` |
 | `reset_chip` | generic | `/dev/gpiochip0` | gpiochip of `reset_pin` |
+| `spi_cs_pin` | generic | none (controller CS) | chip select on a GPIO, driven low around each frame |
+| `spi_cs_chip` | generic | `/dev/gpiochip0` | gpiochip of `spi_cs_pin` |
 
 On the Pi drivers the PRU reset is fixed on GPIO25.
 
@@ -46,14 +48,19 @@ On the Pi drivers the PRU reset is fixed on GPIO25.
    pin input (Manta M8P: EXP2 pin 3). Allwinner GPIOs are numbered
    `(port - 'A') * 32 + pin`, so `reset_pin=PH9` is line 233 on gpiochip0. Port C
    runs at 1.8 V on CB1 V2.1, don't use it there.
-4. Load the component, for example:
+4. The CB1 puts SPI1 on the same header pins as a Raspberry Pi (MOSI 19 = PH7,
+   MISO 21 = PH8, SCLK 23 = PH6), but **the CE0 (pin 24) and GPIO25 (pin 22)
+   positions are not connected on the CB1**. Use free GPIOs for chip select and
+   reset instead, e.g. header pin 15 (PC10) and pin 13 (PC12), wired to the
+   board's chip select and reset inputs (Manta M8P: EXP2 pin 4 and pin 3).
+5. Load the component, for example:
 
 ```
-loadrt remora-spi PRU_base_freq=40000 SPI_freq=8000000 reset_pin=PH9
+loadrt remora-spi PRU_base_freq=40000 SPI_freq=1000000 spi_cs_pin=PC10 reset_pin=PC12
 ```
 
-The driver logs which device, clock and reset line it uses. Check the CB1
-40-pin header pinout for which pins carry SPI1 (SCK is PH6) before wiring.
+The driver logs which device, clock, chip select and reset lines it uses.
+Without `spi_cs_pin` the Remora board never sees a chip select on a CB1.
 
 ### Latency
 

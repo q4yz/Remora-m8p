@@ -203,6 +203,12 @@ RTAPI_MP_STRING(reset_pin, "PRU reset GPIO for the generic driver, line number o
 char *reset_chip = GSPI_DEFAULT_GPIOCHIP;
 RTAPI_MP_STRING(reset_chip, "gpiochip of reset_pin for the generic driver");
 
+char *spi_cs_pin = "";
+RTAPI_MP_STRING(spi_cs_pin, "chip select GPIO for the generic driver when the SPI CS is not on the header (CB1), line number or port name like PC10");
+
+char *spi_cs_chip = GSPI_DEFAULT_GPIOCHIP;
+RTAPI_MP_STRING(spi_cs_chip, "gpiochip of spi_cs_pin for the generic driver");
+
 static int reset_gpio_pin = 25;				// RPI GPIO pin number used to force watchdog reset of the PRU 
 
 
@@ -493,6 +499,7 @@ void rtapi_app_exit(void)
 	if (gspi == true)
 	{
 		gspi_reset_close();
+		gspi_cs_close();
 		gspi_close();
 	}
 
@@ -676,11 +683,22 @@ int rt_peripheral_init(void)
 			return 0;
 		}
 
+		// chip select on a GPIO, for boards without the SPI CS on the header (CB1)
+		if (spi_cs_pin[0])
+		{
+			if (!gspi_cs_init(spi_cs_chip, spi_cs_pin))
+			{
+				gspi_close();
+				return 0;
+			}
+		}
+
 		// the PRU reset pin is optional, only used when the firmware config has a "Reset Pin" module
 		if (reset_pin[0])
 		{
 			if (!gspi_reset_init(reset_chip, reset_pin))
 			{
+				gspi_cs_close();
 				gspi_close();
 				return 0;
 			}
