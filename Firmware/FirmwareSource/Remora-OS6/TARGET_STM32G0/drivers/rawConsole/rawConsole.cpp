@@ -15,11 +15,11 @@ void rawConsoleInit(void)
     if (rawConsoleClock == SystemCoreClock) return;
     if (rawConsoleClock) while (!(USART4->ISR & USART_ISR_TC)) {}
 
-    // PE8 as USART4_TX (alternate function 4)
+    // PE8 as USART4_TX: alternate function 0 on the STM32G0B1 (AF4 is USART4 on PA0, not PE8)
     RCC->IOPENR |= RCC_IOPENR_GPIOEEN;
     GPIOE->MODER = (GPIOE->MODER & ~(3U << (8 * 2))) | (2U << (8 * 2));
     GPIOE->OSPEEDR |= (3U << (8 * 2));
-    GPIOE->AFR[1] = (GPIOE->AFR[1] & ~(0xFU << ((8 - 8) * 4))) | (4U << ((8 - 8) * 4));
+    GPIOE->AFR[1] = (GPIOE->AFR[1] & ~(0xFU << ((8 - 8) * 4))) | (0U << ((8 - 8) * 4));
 
     // USART4 on PCLK (= SystemCoreClock, APB prescaler 1), transmitter only
     RCC->APBENR1 |= RCC_APBENR1_USART4EN;
