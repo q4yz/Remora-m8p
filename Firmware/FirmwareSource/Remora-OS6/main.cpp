@@ -554,6 +554,9 @@ int main()
 
 #if REMORA_DEBUG
     debugLinkReport(currentState);
+#if defined(TARGET_MANTA8)
+    rawHeartbeat();
+#endif
 #endif
 
     switch(currentState){

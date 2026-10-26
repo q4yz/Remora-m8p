@@ -7,5 +7,6 @@
 
 void rawConsoleInit(void);
 void rawConsolePuts(const char *s);
+void rawHeartbeat(void);    // toggles EXP2 pin 5 (PE7) every 0.5 s, call from the main loop
 
 #endif
