@@ -2,8 +2,13 @@
 #define REMORA_H
 #pragma pack(push, 1)
 
+// The frames are packed, their byte layout is shared with the LinuxCNC component. aligned(4)
+// keeps the layout but places every instance on a word boundary, so the 32-bit fields that
+// modules access through pointers are aligned (the Cortex-M0+ faults on unaligned accesses).
+// rxData.outputs (offset 61) stays unaligned, use a byte safe pointer for it.
 
-typedef union
+
+typedef union __attribute__((aligned(4)))
 {
   // this allow structured access to the incoming SPI data without having to move it
   struct
@@ -24,7 +29,7 @@ typedef union
 extern volatile rxData_t rxData;
 
 
-typedef union
+typedef union __attribute__((aligned(4)))
 {
   // this allow structured access to the out going SPI data without having to move it
   struct

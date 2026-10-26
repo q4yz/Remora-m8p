@@ -14,7 +14,8 @@ class DigitalPin : public Module
 {
 	private:
 
-		volatile uint16_t *ptrData; 	// pointer to the data source
+		typedef volatile uint16_t __attribute__((aligned(1))) unaligned_u16;
+		unaligned_u16 *ptrData; 		// pointer to the data source, rxData.outputs is not 16-bit aligned
 		int bitNumber;				// location in the data source
 		bool invert;
 		bool safeState;				// output level while LinuxCNC is disconnected
