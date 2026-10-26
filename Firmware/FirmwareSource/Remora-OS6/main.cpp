@@ -1,3 +1,7 @@
+// The hub / standalone Remora program. CAN expansion nodes (REMORA_CAN_NODE, e.g. the EBB42)
+// have their own main() in their target folder.
+#ifndef REMORA_CAN_NODE
+
 
 /*
 Remora PRU firmware for LinuxCNC
@@ -66,6 +70,12 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "rcservo.h"
 #include "resetPin.h"
 #include "stepgen.h"
+
+#if defined(TARGET_MANTA8)
+// CAN expansion boards (CAN_PROTOCOL.md), the M8P is the hub
+#define CAN_HUB
+#include "CanHub.h"
+#endif
 #include "switch.h"
 #include "temperature.h"
 #include "tmc.h"
@@ -310,6 +320,35 @@ void deserialiseJSON()
 }
 
 
+#ifdef CAN_HUB
+RemoraCAN* canBus = nullptr;
+CanHub* canHub = nullptr;
+
+void configCan()
+{
+    // optional: "CAN": { "Bitrate": 1000000, "Nodes": [ { "UUID": "...", "Node": 1, "Comment": "..." } ] }
+    if (configError || !doc.containsKey("CAN")) return;
+
+    printf("\n4b. Config CAN\n");
+
+    JsonObject cfg = doc["CAN"];
+    uint32_t bitrate = cfg["Bitrate"] | 1000000;
+
+    // Manta M8P: FDCAN1 on PD12 (RX) / PD13 (TX), alternate function 3, on-board transceiver
+    canBus = new RemoraCAN(FDCAN1, GPIOD, 12, 13, GPIO_AF3_FDCAN1, bitrate);
+    if (!canBus->start()) return;
+
+    canHub = new CanHub(canBus);
+
+    JsonArray nodes = cfg["Nodes"];
+    for (JsonArray::iterator it = nodes.begin(); it != nodes.end(); ++it)
+    {
+        JsonObject n = *it;
+        canHub->addNode(n["UUID"] | "", n["Node"] | 0, n["Comment"] | "");
+    }
+}
+#endif
+
 void configThreads()
 {
     if (configError) return;
@@ -552,6 +591,11 @@ int main()
     }
 #endif
 
+#ifdef CAN_HUB
+    // CAN expansion nodes; silent while the SPI link runs (blocking printf would cost frames)
+    if (canHub) canHub->service(HAL_GetTick(), currentState == ST_RUNNING);
+#endif
+
 #if REMORA_DEBUG
     debugLinkReport(currentState);
 #if defined(TARGET_MANTA8)
@@ -571,6 +615,9 @@ int main()
             readJsonConfig();
             setup();
             deserialiseJSON();
+#ifdef CAN_HUB
+            configCan();
+#endif
             configThreads();
             createThreads();
             //debugThreadHigh();
@@ -719,3 +766,5 @@ int main()
 
     }
 }
+
+#endif // REMORA_CAN_NODE

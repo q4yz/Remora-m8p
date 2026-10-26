@@ -23,6 +23,11 @@
             "target.components_add" : ["SD"]
         },
         
+        "EBB42": {
+            "target.mbed_rom_size": "0x20000",
+            "target.console-uart": false,
+            "target.c_lib": "std"
+        },
         "MANTA8": {
             "target.mbed_app_start": "0x08002000",
             "platform.stdio-baud-rate": 115200,
