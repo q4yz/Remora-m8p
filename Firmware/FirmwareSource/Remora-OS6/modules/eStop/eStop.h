@@ -2,7 +2,7 @@
 #define ESTOP_H
 
 #include <cstdint>
-#include <iostream>
+#include <string>
 #include <string>
 
 #include "../../configuration.h"

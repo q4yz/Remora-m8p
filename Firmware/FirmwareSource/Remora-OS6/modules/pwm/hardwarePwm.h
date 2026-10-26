@@ -2,7 +2,7 @@
 #define HARDWAREPWM_H
 
 #include <string>
-#include <iostream>
+#include <cstdio>
 
 #include "modules/module.h"
 #include "drivers/pin/pin.h"

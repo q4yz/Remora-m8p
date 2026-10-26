@@ -10,7 +10,7 @@ HardwarePWM::HardwarePWM(volatile float &ptrPwmPulseWidth, int pwmPeriod, std::s
     pwmPeriod(pwmPeriod),
 	pin(pin)
 {
-    cout << "Creating Hardware PWM at pin " << this->pin << endl;
+    printf("Creating Hardware PWM at pin %s\n", this->pin.c_str());
 
     variablePeriod = false;
     safeDuty = 0;
@@ -39,7 +39,7 @@ HardwarePWM::HardwarePWM(volatile float &ptrPwmPeriod, volatile float &ptrPwmPul
     pwmPeriod(pwmPeriod),
 	pin(pin)
 {
-    cout << "Creating variable frequency Hardware PWM at pin " << this->pin << endl;
+    printf("Creating variable frequency Hardware PWM at pin %s\n", this->pin.c_str());
 
     variablePeriod = true;
     safeDuty = 0;

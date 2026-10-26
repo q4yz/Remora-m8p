@@ -3,7 +3,7 @@
 
 #include <cstdint>
 #include <string>
-#include <iostream>
+#include <string>
 
 #include "modules/module.h"
 #include "drivers/pin/pin.h"

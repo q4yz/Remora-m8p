@@ -1,7 +1,6 @@
 #include "mbed.h"
 #include "stm32g0xx_hal.h"
 
-#include <iostream>
 #include <stdio.h>
 
 #include "interrupt.h"

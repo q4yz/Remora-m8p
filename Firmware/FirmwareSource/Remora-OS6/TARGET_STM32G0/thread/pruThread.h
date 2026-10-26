@@ -5,7 +5,7 @@
 #include "timer.h"
 
 // Standard Template Library (STL) includes
-#include <iostream>
+#include <algorithm>
 #include <vector>
 
 using namespace std;
