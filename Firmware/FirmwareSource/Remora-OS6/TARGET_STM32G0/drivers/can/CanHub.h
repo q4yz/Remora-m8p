@@ -12,8 +12,8 @@
         "CAN": { "Bitrate": 1000000,
                  "Nodes": [ { "UUID": "0e0d81e4210c", "Node": 1, "Comment": "toolhead" } ] }
 
-    Unknown nodes are reported with their UUID so it can be copied into the
-    config. service() runs in the main loop; while quiet (SPI link running)
+    Unknown nodes are reported with their UUID every few seconds so it can be
+    copied into the config. service() runs in the main loop; while quiet (SPI link running)
     nothing is printed, a blocking printf would make the board miss frames.
 ************************************************************************/
 
@@ -30,6 +30,18 @@ typedef struct
     uint32_t lastAssign;        // ms, ASSIGN rate limit
 } canNodeEntry_t;
 
+#define CAN_UNKNOWN_MAX         4
+#define CAN_IDLE_IDENTIFY_MS    5000        // IDENTIFY while all nodes are online (not while running)
+#define CAN_UNKNOWN_PRINT_MS    5000        // repeat the unknown UUIDs on the console
+#define CAN_UNKNOWN_FORGET_MS   12000       // unknown node gone: no reply to two IDENTIFYs
+
+typedef struct
+{
+    uint8_t  uuid[6];
+    bool     used;
+    uint32_t lastSeen;          // ms
+} canUnknownEntry_t;
+
 class CanHub
 {
     private:
@@ -38,17 +50,18 @@ class CanHub
         canNodeEntry_t  nodes[CAN_NODE_MAX];
         int             nodeCount;
         uint32_t        lastIdentify;
+        uint32_t        lastStatus;         // ms, bus status print while nodes are missing
+        uint32_t        lastUnknownPrint;   // ms
 
-        uint8_t         unknownUuid[6];     // unknown node waiting to be printed
-        bool            unknownPending;
-        uint8_t         unknownPrinted[6];  // last unknown node printed, each one is printed once
-        bool            unknownPrintedAny;
+        canUnknownEntry_t unknown[CAN_UNKNOWN_MAX];     // nodes on the bus that are not in config.txt
+        bool            unknownNew;         // a new one, print right away
 
         void handleLssReply(const canFrame_t& frame, uint32_t now);
         void handleHeartbeat(const canFrame_t& frame, uint32_t now);
         void sendIdentify(void);
         void sendAssign(const uint8_t uuid[6], uint8_t node);
-        void report(void);
+        void report(uint32_t now);
+        void rememberUnknown(const uint8_t uuid[6], uint32_t now);
 
     public:
 

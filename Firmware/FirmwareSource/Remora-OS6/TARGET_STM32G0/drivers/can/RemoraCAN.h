@@ -30,6 +30,10 @@ class RemoraCAN
         uint32_t            bitrate;
         bool                running;
         uint32_t            busOffCount;
+        uint32_t            txCount;            // frames queued
+        uint32_t            txDropped;          // TX FIFO full (nobody acknowledges)
+        uint32_t            rxCount;
+        uint32_t            lastError;          // last protocol error code (LEC), 0 = none
 
     public:
 
@@ -45,6 +49,7 @@ class RemoraCAN
         bool isRunning(void) { return this->running; }
         uint32_t getBusOffCount(void) { return this->busOffCount; }
         uint16_t getErrorCount(void);       // transmit + receive error counters
+        void printStatus(void);             // one line for the debug console
 };
 
 #endif

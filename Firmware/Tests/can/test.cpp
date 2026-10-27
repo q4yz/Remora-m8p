@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
         run(hub, {&a, &u}, now, 1500);
         CHECK(a.node->getNode() == 1 && u.node->getNode() == 0);
         CHECK(hub.aliveMask() == 0x1);
-        printf("  (unknown node UUID %s should be printed exactly once above)\n", hex(u.node->getUuid()).c_str());
+        printf("  (unknown node UUID %s should be printed above, again every 5 s)\n", hex(u.node->getUuid()).c_str());
     }
     else if (sc == "lost") {
         Node a(1, 2, 3);

@@ -33,6 +33,25 @@ Hold BOOT, press RESET (or plug in USB while holding BOOT), then from the CB1 / 
 dfu-util -a 0 -s 0x08000000:leave -D BUILD/EBB42/GCC_ARM-RELEASE/firmware.bin
 ```
 
+After flashing press RESET (without BOOT).
+
+## Debug output over USB
+
+The node firmware is a USB serial port on the same USB-C connector: "USB
+Serial Device (COMx)" on Windows, `/dev/ttyACM0` on Linux, any baud rate
+(e.g. PuTTY, or `picocom /dev/ttyACM0`). The USB serial number is the node
+UUID. Every 2 s:
+
+```
+node: UUID 0e0d81e4210c, number 0, unassigned, uptime 12 s
+CAN: tx 0 (dropped 0, waiting 0), rx 0, tx-errors 0, rx-errors 0, last error none, bus-off 0
+```
+
+plus `LSS: IDENTIFY from the hub ...` and `LSS: ASSIGN ...` when the hub
+talks to the node. `rx 0` means nothing from the hub arrives; `last error
+ACK` means nobody acknowledges the node's frames (wiring, termination, the
+hub not running).
+
 ## Wiring
 
 CAN H / CAN L / GND between the M8P CAN connector and the EBB42. The bus needs

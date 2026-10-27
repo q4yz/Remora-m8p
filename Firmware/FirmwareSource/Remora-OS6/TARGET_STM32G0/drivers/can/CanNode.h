@@ -19,7 +19,7 @@ class CanNode
         uint8_t     state;          // NODE_STATE_*
         uint32_t    lastHeartbeat;
 
-        void sendLssReply(void);
+        bool sendLssReply(void);
         void sendHeartbeat(uint32_t now);
         void handleLss(const canFrame_t& frame);
 

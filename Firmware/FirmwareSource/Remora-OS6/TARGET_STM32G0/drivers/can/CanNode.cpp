@@ -16,7 +16,7 @@ CanNode::CanNode(RemoraCAN* can) :
 }
 
 
-void CanNode::sendLssReply()
+bool CanNode::sendLssReply()
 {
     canLssReply_t reply;
     memcpy(reply.uuid, this->uuid, 6);
@@ -28,7 +28,7 @@ void CanNode::sendLssReply()
     f.extended = true;
     f.len = sizeof(reply);
     memcpy(f.data, &reply, sizeof(reply));
-    this->can->send(f);
+    return this->can->send(f);
 }
 
 
@@ -56,8 +56,11 @@ void CanNode::handleLss(const canFrame_t& frame)
     switch (frame.data[0])
     {
         case LSS_IDENTIFY:
-            this->sendLssReply();
+        {
+            bool sent = this->sendLssReply();
+            printf("LSS: IDENTIFY from the hub, reply %s\n", sent ? "queued" : "NOT sent (TX queue full)");
             break;
+        }
 
         case LSS_ASSIGN:
             if (frame.len == 8 && !memcmp(&frame.data[1], this->uuid, 6))
@@ -66,6 +69,7 @@ void CanNode::handleLss(const canFrame_t& frame)
                 this->node = (n <= CAN_NODE_MAX) ? n : 0;
                 this->state = this->node ? NODE_STATE_PREOP : NODE_STATE_UNASSIGNED;
                 this->sendLssReply();                           // confirm
+                printf("LSS: ASSIGN, node number %d\n", this->node);
             }
             break;
     }

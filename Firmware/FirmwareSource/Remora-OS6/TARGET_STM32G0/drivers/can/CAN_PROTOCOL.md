@@ -43,14 +43,16 @@ Node numbers 1 ... 15. Lower identifier = higher priority on the bus.
   ```
 
 - While a configured node is missing, the hub sends `LSS IDENTIFY` (`0x7E5`,
-  byte 0 = `0x01`) once per second. Every node answers with an LSS REPLY:
+  byte 0 = `0x01`) once per second; with all nodes online every 5 s while
+  LinuxCNC is not running, so nodes added later are found too. Every node answers with an LSS REPLY:
   UUID (6 bytes), state, current node number. The replies use an extended
   identifier containing 24 bits of the UUID, so simultaneous replies are
   serialised by CAN arbitration instead of colliding.
 - A node with a configured UUID but the wrong number gets `LSS ASSIGN`
   (byte 0 = `0x02`, bytes 1-6 UUID, byte 7 node number) and confirms with a
-  new LSS REPLY. Unknown UUIDs are printed once on the hub's debug console,
-  copy them into `config.txt`; they are assigned number 0 (unassigned).
+  new LSS REPLY. Unknown UUIDs are printed on the hub's debug console when
+  they appear and again every 5 s, copy them into `config.txt`; they are
+  assigned number 0 (unassigned).
 - An assigned node sends a HEARTBEAT every 100 ms: state, protocol version,
   CAN error counter, uptime. The hub marks a node lost after 350 ms without
   one and starts identifying again; a node that rebooted gets its number back.

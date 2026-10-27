@@ -21,4 +21,5 @@ public:
     bool receive(canFrame_t& f) { if (!alive || rx.empty()) return false; f = rx.front(); rx.pop_front(); return true; }
     void service() {}
     uint16_t getErrorCount() { return 0; }
+    void printStatus() {}
 };

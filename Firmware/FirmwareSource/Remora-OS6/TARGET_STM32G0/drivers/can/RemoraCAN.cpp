@@ -7,7 +7,11 @@ RemoraCAN::RemoraCAN(FDCAN_GlobalTypeDef* instance, GPIO_TypeDef* port, uint16_t
                      uint8_t alternate, uint32_t bitrate) :
     bitrate(bitrate),
     running(false),
-    busOffCount(0)
+    busOffCount(0),
+    txCount(0),
+    txDropped(0),
+    rxCount(0),
+    lastError(0)
 {
     // FDCAN kernel clock from PCLK (64 MHz), FDCAN1 and FDCAN2 share the clock enable
     RCC_PeriphCLKInitTypeDef clk = {0};
@@ -82,7 +86,11 @@ bool RemoraCAN::start()
 bool RemoraCAN::send(const canFrame_t& frame)
 {
     if (!this->running || frame.len > 8) return false;
-    if (HAL_FDCAN_GetTxFifoFreeLevel(&this->hfdcan) == 0) return false;     // never block
+    if (HAL_FDCAN_GetTxFifoFreeLevel(&this->hfdcan) == 0)                   // never block
+    {
+        this->txDropped++;
+        return false;
+    }
 
     FDCAN_TxHeaderTypeDef header = {0};
     header.Identifier = frame.id;
@@ -95,7 +103,9 @@ bool RemoraCAN::send(const canFrame_t& frame)
     header.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
     header.MessageMarker = 0;
 
-    return HAL_FDCAN_AddMessageToTxFifoQ(&this->hfdcan, &header, (uint8_t*)frame.data) == HAL_OK;
+    if (HAL_FDCAN_AddMessageToTxFifoQ(&this->hfdcan, &header, (uint8_t*)frame.data) != HAL_OK) return false;
+    this->txCount++;
+    return true;
 }
 
 
@@ -111,6 +121,7 @@ bool RemoraCAN::receive(canFrame_t& frame)
     frame.extended = (header.IdType == FDCAN_EXTENDED_ID);
     frame.len = (uint8_t)((header.DataLength >> 16) & 0xF);
     if (frame.len > 8) frame.len = 8;                   // classic CAN only
+    this->rxCount++;
     return true;
 }
 
@@ -121,7 +132,15 @@ void RemoraCAN::service()
 
     // bus-off (e.g. bus unplugged, missing termination): the peripheral stops, restart it
     FDCAN_ProtocolStatusTypeDef status;
-    if (HAL_FDCAN_GetProtocolStatus(&this->hfdcan, &status) == HAL_OK && status.BusOff)
+    if (HAL_FDCAN_GetProtocolStatus(&this->hfdcan, &status) != HAL_OK) return;
+
+    // reading the status clears the last error code, keep the last real one for printStatus()
+    if (status.LastErrorCode != FDCAN_PROTOCOL_ERROR_NONE && status.LastErrorCode != FDCAN_PROTOCOL_ERROR_NO_CHANGE)
+    {
+        this->lastError = status.LastErrorCode;
+    }
+
+    if (status.BusOff)
     {
         this->busOffCount++;
         HAL_FDCAN_Stop(&this->hfdcan);
@@ -135,4 +154,22 @@ uint16_t RemoraCAN::getErrorCount()
     FDCAN_ErrorCountersTypeDef counters;
     if (HAL_FDCAN_GetErrorCounters(&this->hfdcan, &counters) != HAL_OK) return 0xFFFF;
     return (uint16_t)(counters.TxErrorCnt + counters.RxErrorCnt);
+}
+
+
+void RemoraCAN::printStatus()
+{
+    static const char* const errorNames[8] = { "none", "stuff", "form", "ACK (nobody answers)",
+                                               "bit1", "bit0", "CRC", "none" };
+
+    FDCAN_ErrorCountersTypeDef counters = {0};
+    HAL_FDCAN_GetErrorCounters(&this->hfdcan, &counters);
+
+    printf("CAN: tx %lu (dropped %lu, waiting %lu), rx %lu, tx-errors %lu, rx-errors %lu%s, last error %s, bus-off %lu\n",
+           (unsigned long)this->txCount, (unsigned long)this->txDropped,
+           (unsigned long)(3 - HAL_FDCAN_GetTxFifoFreeLevel(&this->hfdcan)),
+           (unsigned long)this->rxCount,
+           (unsigned long)counters.TxErrorCnt, (unsigned long)counters.RxErrorCnt,
+           counters.RxErrorPassive ? " (passive)" : "",
+           errorNames[this->lastError & 7], (unsigned long)this->busOffCount);
 }

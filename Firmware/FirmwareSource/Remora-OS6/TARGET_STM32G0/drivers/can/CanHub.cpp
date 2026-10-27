@@ -32,10 +32,12 @@ CanHub::CanHub(RemoraCAN* can) :
     can(can),
     nodeCount(0),
     lastIdentify(0),
-    unknownPending(false),
-    unknownPrintedAny(false)
+    lastStatus(0),
+    lastUnknownPrint(0),
+    unknownNew(false)
 {
     memset(this->nodes, 0, sizeof(this->nodes));
+    memset(this->unknown, 0, sizeof(this->unknown));
 }
 
 
@@ -115,13 +117,31 @@ void CanHub::handleLssReply(const canFrame_t& frame, uint32_t now)
         return;
     }
 
-    // a node that is not in config.txt: report its UUID once, and make sure it has no number
-    if (!this->unknownPrintedAny || memcmp(this->unknownPrinted, reply.uuid, 6))
-    {
-        memcpy(this->unknownUuid, reply.uuid, 6);
-        this->unknownPending = true;
-    }
+    // a node that is not in config.txt: report its UUID, and make sure it has no number
+    this->rememberUnknown(reply.uuid, now);
     if (reply.node != 0) this->sendAssign(reply.uuid, 0);
+}
+
+
+void CanHub::rememberUnknown(const uint8_t uuid[6], uint32_t now)
+{
+    canUnknownEntry_t* slot = nullptr;
+    for (int i = 0; i < CAN_UNKNOWN_MAX; i++)
+    {
+        canUnknownEntry_t* u = &this->unknown[i];
+        if (u->used && !memcmp(u->uuid, uuid, 6))
+        {
+            u->lastSeen = now;
+            return;
+        }
+        // free slot, else the one not seen for the longest time
+        if (!slot || (slot->used && (!u->used || (now - u->lastSeen) > (now - slot->lastSeen)))) slot = u;
+    }
+
+    memcpy(slot->uuid, uuid, 6);
+    slot->used = true;
+    slot->lastSeen = now;
+    this->unknownNew = true;
 }
 
 
@@ -179,17 +199,36 @@ void CanHub::service(uint32_t now, bool quiet)
         if (!n->alive) missing = true;
     }
 
-    if ((missing || this->nodeCount == 0) && (now - this->lastIdentify) >= CAN_IDENTIFY_MS)
+    // fast while a configured node is missing; slow otherwise to find nodes added later
+    // (unknown ones), but not while LinuxCNC runs: the bus is kept for process data then
+    uint32_t identifyPeriod = (missing || this->nodeCount == 0) ? CAN_IDENTIFY_MS : CAN_IDLE_IDENTIFY_MS;
+    if ((!quiet || missing) && (now - this->lastIdentify) >= identifyPeriod)
     {
         this->lastIdentify = now;
         this->sendIdentify();
     }
 
-    if (!quiet) this->report();
+    for (int i = 0; i < CAN_UNKNOWN_MAX; i++)
+    {
+        canUnknownEntry_t* u = &this->unknown[i];
+        if (u->used && (now - u->lastSeen) > CAN_UNKNOWN_FORGET_MS) u->used = false;
+    }
+
+    if (!quiet)
+    {
+        this->report(now);
+
+        // bus diagnosis while a node is missing: no ACK = wiring / termination / node not running
+        if ((missing || this->nodeCount == 0) && (now - this->lastStatus) >= 2000)
+        {
+            this->lastStatus = now;
+            this->can->printStatus();
+        }
+    }
 }
 
 
-void CanHub::report()
+void CanHub::report(uint32_t now)
 {
     for (int i = 0; i < this->nodeCount; i++)
     {
@@ -202,14 +241,19 @@ void CanHub::report()
         printf("\n");
     }
 
-    if (this->unknownPending)
+    // nodes on the bus without an entry in config.txt: right away, then every few seconds
+    if (this->unknownNew || (now - this->lastUnknownPrint) >= CAN_UNKNOWN_PRINT_MS)
     {
-        this->unknownPending = false;
-        printf("CAN: unknown node UUID ");
-        printUuid(this->unknownUuid);
-        printf(", add it to \"CAN\" \"Nodes\" in config.txt\n");
-        memcpy(this->unknownPrinted, this->unknownUuid, 6);
-        this->unknownPrintedAny = true;
+        this->unknownNew = false;
+        this->lastUnknownPrint = now;
+
+        for (int i = 0; i < CAN_UNKNOWN_MAX; i++)
+        {
+            if (!this->unknown[i].used) continue;
+            printf("CAN: unknown node UUID ");
+            printUuid(this->unknown[i].uuid);
+            printf(" on the bus, add it to \"CAN\" \"Nodes\" in config.txt\n");
+        }
     }
 }
 
