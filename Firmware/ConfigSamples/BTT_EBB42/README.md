@@ -3,9 +3,9 @@
 Expansion board for the Manta M8P hub, see
 `FirmwareSource/Remora-OS6/TARGET_STM32G0/drivers/can/CAN_PROTOCOL.md`.
 
-**State: phase 1.** The node joins the bus, gets its node number from the hub
-and sends heartbeats. Extruder, heater, thermistor and fans follow in the next
-phases.
+**State: phase 2.** The node joins the bus, gets its node number and its
+modules from the hub. Supported on the node so far: Digital Pin (inputs and
+outputs). Extruder, heater, thermistor and fans follow in the next phases.
 
 ## Board facts
 
@@ -80,3 +80,19 @@ Add it with a node number:
 ```
 
 After a reset the M8P reports `CAN: node 1 (toolhead) online, state 1`.
+
+Modules of the node go into its entry, with the same keys as local modules.
+`"Data Bit"` is the LinuxCNC bit and must not be used by a Digital Pin of the
+M8P itself:
+
+```json
+"Nodes": [ { "UUID": "0e0d81e4210c", "Node": 1, "Comment": "toolhead",
+             "Modules": [
+               { "Type": "Digital Pin", "Comment": "probe connector PB8",
+                 "Pin": "PB_8", "Mode": "Output", "Data Bit": 1, "Safe State": "Low" } ] } ]
+```
+
+The M8P console then shows `CAN: node 1 (toolhead) configured, 1 module(s),
+running`, the EBB42 USB console the modules it received. `halcmd setp
+remora.output.01 1` switches PB8. Pins PB0 / PB1 (CAN) and PA11 / PA12 (USB)
+are reserved and rejected.

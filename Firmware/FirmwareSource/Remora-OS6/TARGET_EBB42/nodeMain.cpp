@@ -1,9 +1,9 @@
 /***********************************************************************
     Remora CAN node firmware for the BTT EBB42 V1.1 / V1.2 (STM32G0B1CBT6)
 
-    Phase 1: takes its node number from the hub and sends heartbeats
-    (CAN_PROTOCOL.md). Extruder, heater, thermistor and fans follow with the
-    configuration transfer and the process data in the next phases.
+    Takes its node number and its modules (digital pins so far) from the hub
+    and exchanges the process data with it (CAN_PROTOCOL.md, CanNode).
+    Extruder, heater, thermistor and fans follow in the next phases.
 
     EBB42: CAN on PB0 (RX) / PB1 (TX) = FDCAN2, 8 MHz crystal, no bootloader,
     flashed over USB in DFU mode at 0x08000000, 120R termination by jumper.
@@ -68,6 +68,9 @@ int main()
             lastStatus = now;
             printf("node: UUID %s, number %d, %s, uptime %lu s\n", uuid, node.getNode(),
                    stateName(node.getState()), (unsigned long)(now / 1000));
+            printf("node: %d module(s), %lu COMMAND frame(s), outputs 0x%04x, inputs 0x%04x\n",
+                   node.getModuleCount(), (unsigned long)node.getCommandCount(),
+                   node.getOutputs(), node.getInputs());
             can.printStatus();
         }
     }

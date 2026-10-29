@@ -26,7 +26,7 @@
 
 #include <stdint.h>
 
-#define CAN_PROTOCOL_VERSION    1
+#define CAN_PROTOCOL_VERSION    2           // 2: configuration transfer and digital I/O
 
 #define CAN_NODE_MAX            15          // node numbers 1 ... 15
 
@@ -58,7 +58,79 @@
 #define CAN_NODE_TIMEOUT_MS     350         // hub: node lost after this long without heartbeat
 #define CAN_IDENTIFY_MS         1000        // hub: IDENTIFY period while nodes are missing
 
+// configuration transfer (phase 2), CONFIG frames hub -> node, byte 0:
+#define CFG_BEGIN               0x01        // byte 1 module count; outputs go to their safe state, pins released
+#define CFG_MODULE              0x02        // byte 1 index, byte 2 module type, bytes 3-7 module data
+#define CFG_END                 0x03        // byte 1 module count, bytes 2-3 checksum: node applies, state RUNNING
+// CONFIG REPLY node -> hub: byte 0 command, byte 1 index (count for BEGIN / END), byte 2 status, byte 3 detail
+
+// CONFIG REPLY status
+#define CFG_OK                  0
+#define CFG_ERR_TYPE            1           // unknown module type
+#define CFG_ERR_PIN             2           // pin does not exist on this board
+#define CFG_ERR_RESERVED        3           // pin used by the node itself (CAN, USB)
+#define CFG_ERR_PIN_USED        4           // pin used by two modules
+#define CFG_ERR_FULL            5           // too many modules
+#define CFG_ERR_SEQUENCE        6           // frame out of order
+#define CFG_ERR_CHECKSUM        7           // END: count or checksum does not match
+#define CFG_ERR_BIT             8           // local data bit out of range or used twice
+
+#define CAN_MODULES_MAX         16          // modules per node
+#define CAN_CONFIG_REPLY_MS     50          // hub: resend a config frame without reply after this
+#define CAN_CONFIG_RETRIES      3           // then start over after CAN_CONFIG_RESTART_MS
+#define CAN_CONFIG_RESTART_MS   1000
+
+// module types
+#define MODULE_DIGITAL_PIN      0x01        // data: pin, flags (DPIN_*), local data bit
+
+// digital pin flags
+#define DPIN_OUTPUT             0x01
+#define DPIN_INVERT             0x02
+#define DPIN_SAFE_HIGH          0x04        // output level while the hub or LinuxCNC is gone
+#define DPIN_MOD_SHIFT          4           // bits 4-5: pin modifier
+#define DPIN_MOD_MASK           0x30
+#define DPIN_MOD_NONE           0
+#define DPIN_MOD_PULLUP         1
+#define DPIN_MOD_PULLDOWN       2
+#define DPIN_MOD_OPENDRAIN      3
+
+// process data (phase 3): COMMAND hub -> node, STATUS node -> hub
+#define CAN_PROCESS_MS          20          // COMMAND / STATUS sent on a change and at least this often
+#define CAN_COMMAND_TIMEOUT_MS  100         // node: no COMMAND for this long -> state SAFE
+#define CMD_FLAG_SAFE           0x01        // LinuxCNC gone: outputs to their safe state
+
 #pragma pack(push, 1)
+
+// CONFIG frame (8 bytes)
+typedef struct
+{
+    uint8_t  cmd;                           // CFG_*
+    uint8_t  index;                         // module index, or module count for BEGIN / END
+    uint8_t  type;                          // MODULE_*; END: checksum low byte
+    uint8_t  data[5];                       // END: data[0] checksum high byte
+} canConfigFrame_t;
+
+// CONFIG REPLY payload (4 bytes)
+typedef struct
+{
+    uint8_t  cmd;                           // the command answered
+    uint8_t  index;
+    uint8_t  status;                        // CFG_OK, CFG_ERR_*
+    uint8_t  detail;                        // e.g. the pin that was rejected
+} canConfigReply_t;
+
+// COMMAND payload (3 bytes)
+typedef struct
+{
+    uint16_t outputs;                       // node local output bits
+    uint8_t  flags;                         // CMD_FLAG_*
+} canCommand_t;
+
+// STATUS payload (2 bytes)
+typedef struct
+{
+    uint16_t inputs;                        // node local input bits
+} canStatus_t;
 
 // LSS reply payload (8 bytes)
 typedef struct
@@ -81,6 +153,66 @@ typedef struct
 
 static_assert(sizeof(canLssReply_t) == 8, "LSS reply must fit a CAN frame");
 static_assert(sizeof(canHeartbeat_t) == 8, "heartbeat must fit a CAN frame");
+static_assert(sizeof(canConfigFrame_t) == 8, "config frame must fit a CAN frame");
+
+
+// pins travel as one byte: port << 4 | number, port 0 = A ... 5 = F
+#define CAN_PIN(port, number)   ((uint8_t)(((port) << 4) | (number)))
+#define CAN_PIN_PORT(pin)       ((pin) >> 4)
+#define CAN_PIN_NUMBER(pin)     ((pin) & 0x0F)
+
+// "PB_8", "PB8", "pb_8" -> pin byte
+static inline bool canParsePin(const char* s, uint8_t* pin)
+{
+    if (!s || (s[0] != 'P' && s[0] != 'p')) return false;
+    char p = s[1];
+    if (p >= 'a' && p <= 'f') p = (char)(p - 'a' + 'A');
+    if (p < 'A' || p > 'F') return false;
+    s += 2;
+    if (*s == '_') s++;
+    if (*s < '0' || *s > '9') return false;
+    int n = 0;
+    while (*s >= '0' && *s <= '9') n = n * 10 + (*s++ - '0');
+    if (*s || n > 15) return false;
+    *pin = CAN_PIN(p - 'A', n);
+    return true;
+}
+
+// pin byte -> "PB_8"
+static inline const char* canPinName(uint8_t pin, char buf[6])
+{
+    int n = CAN_PIN_NUMBER(pin);
+    buf[0] = 'P';
+    buf[1] = (char)('A' + CAN_PIN_PORT(pin));
+    buf[2] = '_';
+    if (n >= 10) { buf[3] = '1'; buf[4] = (char)('0' + n - 10); buf[5] = 0; }
+    else         { buf[3] = (char)('0' + n); buf[4] = 0; }
+    return buf;
+}
+
+// END checksum: 16-bit sum over type and data of every module record
+static inline uint16_t canConfigChecksum(uint16_t sum, const uint8_t record[6])
+{
+    for (int i = 0; i < 6; i++) sum = (uint16_t)(sum + record[i]);
+    return sum;
+}
+
+static inline const char* canConfigError(uint8_t status)
+{
+    switch (status)
+    {
+        case CFG_OK:            return "ok";
+        case CFG_ERR_TYPE:      return "unknown module type";
+        case CFG_ERR_PIN:       return "pin does not exist on the node";
+        case CFG_ERR_RESERVED:  return "pin reserved on the node (CAN / USB)";
+        case CFG_ERR_PIN_USED:  return "pin used twice";
+        case CFG_ERR_FULL:      return "too many modules";
+        case CFG_ERR_SEQUENCE:  return "sequence error";
+        case CFG_ERR_CHECKSUM:  return "checksum error";
+        case CFG_ERR_BIT:       return "data bit out of range or used twice";
+    }
+    return "?";
+}
 
 
 // 48-bit node UUID from the 96-bit STM32 unique ID (FNV-1a 64, lower 48 bits),

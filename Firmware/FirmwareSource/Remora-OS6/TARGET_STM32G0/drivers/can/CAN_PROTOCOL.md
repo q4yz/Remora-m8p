@@ -58,13 +58,64 @@ Node numbers 1 ... 15. Lower identifier = higher priority on the bus.
   one and starts identifying again; a node that rebooted gets its number back.
 
 Node states: 0 unassigned, 1 pre-operational (number assigned), 2 running
-(configured, phase 2+), 3 safe (lost the hub, outputs in their safe state).
+(configured), 3 safe (lost the hub, outputs in their safe state).
+
+## Configuration transfer (phase 2)
+
+Nodes have no SD card: their modules are in the node's entry of the hub's
+`config.txt`, with the same keys as local modules:
+
+```json
+{ "UUID": "8e85cfce1e6c", "Node": 1, "Comment": "toolhead",
+  "Modules": [
+    { "Type": "Digital Pin", "Pin": "PB_8", "Mode": "Output", "Data Bit": 1,
+      "Invert": "False", "Modifier": "None", "Safe State": "Low" },
+    { "Type": "Digital Pin", "Pin": "PB_9", "Mode": "Input", "Data Bit": 3,
+      "Invert": "True", "Modifier": "Pull Up", "Lost State": "High" } ] }
+```
+
+`"Data Bit"` is the LinuxCNC bit (`remora.output.NN` / `remora.input.NN`), it
+must not be used by a local Digital Pin or another node. `"Safe State"`: output
+level while LinuxCNC or the hub is gone. `"Lost State"`: input value LinuxCNC
+sees while the node is lost or not configured.
+
+Once a node is online the hub sends, on CONFIG `0x600 + n`, one frame at a
+time, each acknowledged on CONFIG REPLY `0x580 + n` (byte 0 command, 1 index,
+2 status, 3 detail):
+
+| Byte 0 | Frame | Bytes 1 ... 7 |
+|---|---|---|
+| `0x01` | BEGIN | module count |
+| `0x02` | MODULE | index, type, 5 data bytes |
+| `0x03` | END | module count, 16-bit sum over all type + data bytes |
+
+Without a reply within 50 ms a frame is sent again (3 times, then the
+transfer starts over after 1 s); the node answers a repeated frame again
+without applying it twice. The node checks every module (pin exists, not
+reserved for CAN / USB, not used twice, bit free) and only applies the
+configuration at END, then reports state RUNNING. A rejected configuration is
+printed on the hub console and not retried until the node reboots. The hub
+sends the configuration again whenever a node comes back or reports a state
+other than RUNNING / SAFE (it rebooted).
+
+Module types: `0x01` digital pin, data: pin (`port << 4 | number`, port 0 =
+A), flags (bit 0 output, 1 invert, 2 safe high, 4-5 modifier: none, pull up,
+pull down, open drain), node local data bit.
+
+## Process data (phase 3)
+
+- COMMAND `0x200 + n`, hub → node: output bits (16-bit, node local), flags
+  (bit 0: LinuxCNC gone, outputs safe). Sent on a change and every 20 ms.
+- STATUS `0x280 + n`, node → hub: input bits (16-bit, node local). Sent on a
+  change and every 20 ms.
+- Node without COMMAND for 100 ms: outputs to their safe state, state SAFE,
+  back to RUNNING with the next COMMAND.
+- The hub maps the node local bits onto the LinuxCNC bits; latency is a few
+  milliseconds (main loop, not the servo thread), fine for switches, LEDs and
+  relays, not for a probe that needs the exact trigger position.
 
 ## Next phases
 
-2. **Configuration**: the hub sends each node its modules (from the node's
-   entry in `config.txt`) over CONFIG / CONFIG REPLY, segmented, CRC checked.
-   Nodes have no SD card.
 3. **Remote modules**: temperature, heater, fans via SP / PV indices; the
    hotend fan rule runs locally on the node.
 4. **Remote stepgen**: SYNC once per servo period, the node applies the speed

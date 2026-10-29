@@ -41,7 +41,8 @@ Temperature::Temperature(volatile float &ptrFeedback, int32_t threadFreq, int32_
   pinSensor(pinSensor),
 	beta(beta),
 	r0(r0),
-	t0(t0)
+	t0(t0),
+  sensorError(false)
 {
     if (this->sensorType == "Thermistor")
     {
@@ -68,14 +69,18 @@ void Temperature::slowUpdate()
 	this->temperaturePV = this->Sensor->getTemperature();
 
     // check for disconnected temperature sensor
+    // slowUpdate() runs in the servo thread interrupt: a printf there blocks it for
+    // milliseconds (115200 baud) and the board misses SPI frames, so print changes only
     if (this->temperaturePV > 0)
     {
+        if (this->sensorError) printf("Temperature sensor on pin %s OK again\n", this->pinSensor.c_str());
+        this->sensorError = false;
         *(this->ptrFeedback) = this->temperaturePV;
     }
     else
     {
-        printf("Temperature sensor error, pin %s reading = %f\n", this->pinSensor.c_str(), this->temperaturePV);
-        //cout << "Temperature sensor error, pin " << this->pinSensor << " reading = " << this->temperaturePV << endl;
+        if (!this->sensorError) printf("Temperature sensor error, pin %s reading = %f\n", this->pinSensor.c_str(), this->temperaturePV);
+        this->sensorError = true;
         *(this->ptrFeedback) = 999;
     }
 

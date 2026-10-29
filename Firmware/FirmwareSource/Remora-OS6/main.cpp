@@ -340,12 +340,67 @@ void configCan()
 
     canHub = new CanHub(canBus);
 
+    // data bits of the hub's own Digital Pin modules, the nodes must not use them
+    uint16_t localOutputs = 0, localInputs = 0;
+    JsonArray local = doc["Modules"];
+    for (JsonArray::iterator it = local.begin(); it != local.end(); ++it)
+    {
+        JsonObject m = *it;
+        if (strcmp(m["Type"] | "", "Digital Pin")) continue;
+        int bit = m["Data Bit"] | -1;
+        if (bit < 0 || bit > 15) continue;
+        if (!strcmp(m["Mode"] | "", "Output")) localOutputs |= (uint16_t)(1u << bit);
+        else localInputs |= (uint16_t)(1u << bit);
+    }
+    canHub->reserveBits(localOutputs, localInputs);
+
     JsonArray nodes = cfg["Nodes"];
     for (JsonArray::iterator it = nodes.begin(); it != nodes.end(); ++it)
     {
         JsonObject n = *it;
-        canHub->addNode(n["UUID"] | "", n["Node"] | 0, n["Comment"] | "");
+        int number = n["Node"] | 0;
+        if (!canHub->addNode(n["UUID"] | "", number, n["Comment"] | "")) continue;
+
+        // the node's modules, same keys as the local modules
+        JsonArray modules = n["Modules"];
+        for (JsonArray::iterator mt = modules.begin(); mt != modules.end(); ++mt)
+        {
+            JsonObject m = *mt;
+            const char* type = m["Type"] | "";
+
+            if (!strcmp(type, "Digital Pin"))
+            {
+                const char* modifier = m["Modifier"] | "None";
+                uint8_t mod = DPIN_MOD_NONE;
+                if (!strcmp(modifier, "Pull Up")) mod = DPIN_MOD_PULLUP;
+                else if (!strcmp(modifier, "Pull Down")) mod = DPIN_MOD_PULLDOWN;
+                else if (!strcmp(modifier, "Open Drain")) mod = DPIN_MOD_OPENDRAIN;
+
+                canHub->addDigitalPin(number, m["Pin"] | "", !strcmp(m["Mode"] | "", "Output"),
+                                      !strcmp(m["Invert"] | "False", "True"), mod,
+                                      !strcmp(m["Safe State"] | "Low", "High"),
+                                      !strcmp(m["Lost State"] | "Low", "High"),
+                                      m["Data Bit"] | -1);
+            }
+            else
+            {
+                printf("CAN: node %d: module type '%s' is not supported on nodes yet\n", number, type);
+            }
+        }
     }
+}
+
+// remote digital inputs into the LinuxCNC input bits; the servo thread changes the local
+// bits in the same word, so the read-modify-write runs with the interrupts off
+static void canMergeInputs()
+{
+    uint16_t mask = canHub->inputMask();
+    if (!mask) return;
+    uint16_t values = canHub->inputValues() & mask;
+
+    __disable_irq();
+    txData.inputs = (uint16_t)((txData.inputs & ~mask) | values);
+    __enable_irq();
 }
 #endif
 
@@ -593,7 +648,15 @@ int main()
 
 #ifdef CAN_HUB
     // CAN expansion nodes; silent while the SPI link runs (blocking printf would cost frames)
-    if (canHub) canHub->service(HAL_GetTick(), currentState == ST_RUNNING);
+    if (canHub)
+    {
+        // rxData.outputs is not 16-bit aligned (offset 61), read it bytewise
+        const volatile uint8_t* out = &rxData.rxBuffer[offsetof(rxData_t, outputs)];
+        uint16_t outputs = (uint16_t)(out[0] | (out[1] << 8));
+
+        canHub->service(HAL_GetTick(), currentState == ST_RUNNING, commsLost, outputs);
+        canMergeInputs();
+    }
 #endif
 
 #if REMORA_DEBUG

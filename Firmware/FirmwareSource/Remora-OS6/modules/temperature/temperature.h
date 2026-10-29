@@ -23,6 +23,7 @@ class Temperature : public Module
     volatile float* ptrFeedback;       	   // pointer where to put the feedback
 
     float temperaturePV;
+    bool  sensorError;                     // last reading invalid, printed only on a change
 
     // thermistor parameters
     float beta;
