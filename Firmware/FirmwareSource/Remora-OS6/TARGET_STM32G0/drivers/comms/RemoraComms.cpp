@@ -195,8 +195,8 @@ void RemoraComms::SPItasks()
                 return;
             }
 
-            // for testing, not needed / implemented
-            printf("  Reset SPI now\n");
+            // counted in dbgTimeouts only: a printf here blocks the main loop for ~1.5 ms, the
+            // next frames time out too and the link drops (a burst of "Reset SPI now")
         }
 
         switch (this->spiRxBuffer.header)

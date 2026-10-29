@@ -96,3 +96,27 @@ The M8P console then shows `CAN: node 1 (toolhead) configured, 1 module(s),
 running`, the EBB42 USB console the modules it received. `halcmd setp
 remora.output.01 1` switches PB8. Pins PB0 / PB1 (CAN) and PA11 / PA12 (USB)
 are reserved and rejected.
+
+## E-stop when the node is missing
+
+Nodes are mandatory by default (`"Mandatory": "False"` makes one optional).
+Give the hub a status bit, a free LinuxCNC input bit:
+
+```json
+"CAN": { "Bitrate": 1000000, "Status Bit": 15, "Nodes": [ ... ] }
+```
+
+and put it into the E-stop chain in the HAL file:
+
+```
+net can-ok remora.input.15 => iocontrol.0.emc-enable-in
+```
+
+LinuxCNC can then not leave E-stop without the toolhead and goes to E-stop
+when it is lost. The M8P prints the whole network once at boot:
+
+```
+CAN network at boot: 1 of 1 configured node(s) online
+  node 1  8e85cfce1e6c  toolhead   mandatory online, configured, 1 module(s)
+  status bit remora.input.15 = 1, all mandatory nodes running
+```

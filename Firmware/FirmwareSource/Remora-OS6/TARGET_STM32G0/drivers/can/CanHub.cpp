@@ -32,8 +32,11 @@ CanHub::CanHub(RemoraCAN* can) :
     can(can),
     nodeCount(0),
     lastIdentify(0),
-    lastStatus(0),
-    lastUnknownPrint(0),
+    quiet(false),
+    bootStart(0),
+    started(false),
+    bootReported(false),
+    statusBit(-1),
     unknownNew(false),
     usedOutputs(0),
     usedInputs(0)
@@ -43,7 +46,7 @@ CanHub::CanHub(RemoraCAN* can) :
 }
 
 
-bool CanHub::addNode(const char* uuidHex, int node, const char* comment)
+bool CanHub::addNode(const char* uuidHex, int node, const char* comment, bool mandatory)
 {
     if (this->nodeCount >= CAN_NODE_MAX) return false;
 
@@ -68,10 +71,11 @@ bool CanHub::addNode(const char* uuidHex, int node, const char* comment)
     }
 
     n->node = (uint8_t)node;
+    n->mandatory = mandatory;
     strncpy(n->comment, comment ? comment : "", sizeof(n->comment) - 1);
     this->nodeCount++;
 
-    printf("CAN: node %d = %s (%s)\n", node, uuidHex, n->comment);
+    printf("CAN: node %d = %s (%s), %s\n", node, uuidHex, n->comment, mandatory ? "mandatory" : "optional");
     return true;
 }
 
@@ -90,6 +94,36 @@ void CanHub::reserveBits(uint16_t outputs, uint16_t inputs)
 {
     this->usedOutputs |= outputs;
     this->usedInputs |= inputs;
+}
+
+
+bool CanHub::setStatusBit(int bit)
+{
+    if (bit < 0 || bit > 15)
+    {
+        printf("CAN: status bit %d out of range 0 ... 15\n", bit);
+        return false;
+    }
+    if (this->usedInputs & (1u << bit))
+    {
+        printf("CAN: status bit %d, input data bit %d is already used\n", bit, bit);
+        return false;
+    }
+    this->usedInputs |= (uint16_t)(1u << bit);
+    this->statusBit = bit;
+    printf("CAN: status bit = remora.input.%02d, 1 while all mandatory nodes run\n", bit);
+    return true;
+}
+
+
+bool CanHub::networkOk()
+{
+    for (int i = 0; i < this->nodeCount; i++)
+    {
+        const canNodeEntry_t* n = &this->nodes[i];
+        if (n->mandatory && !(n->alive && n->cfgState == CFG_STATE_DONE)) return false;
+    }
+    return true;
 }
 
 
@@ -238,6 +272,7 @@ void CanHub::rememberUnknown(const uint8_t uuid[6], uint32_t now)
 
     memcpy(slot->uuid, uuid, 6);
     slot->used = true;
+    slot->printed = false;
     slot->lastSeen = now;
     this->unknownNew = true;
 }
@@ -404,7 +439,9 @@ void CanHub::sendCommand(canNodeEntry_t* n, uint16_t outputs, bool safe, uint32_
     memcpy(f.data, &cmd, sizeof(cmd));
     if (this->can->send(f))
     {
-        if (cmd.outputs != n->lastOutputs || cmd.flags != n->lastFlags || !n->commandSent)
+        // output changes only, and not while LinuxCNC runs: a line costs ~8 ms of main loop,
+        // the SPI frames get lost and the link drops (the node prints every change itself)
+        if (!this->quiet && (cmd.outputs != n->lastOutputs || !n->commandSent))
         {
             printf("CAN: node %d COMMAND outputs 0x%04x (LinuxCNC outputs 0x%04x), %s\n", n->node, cmd.outputs,
                    outputs, safe ? "safe (LinuxCNC not connected)" : "LinuxCNC connected");
@@ -438,6 +475,7 @@ uint16_t CanHub::inputMask()
 {
     uint16_t mask = 0;
     for (int i = 0; i < this->nodeCount; i++) mask |= this->nodes[i].inMask;
+    if (this->statusBit >= 0) mask |= (uint16_t)(1u << this->statusBit);
     return mask;
 }
 
@@ -450,6 +488,7 @@ uint16_t CanHub::inputValues()
         const canNodeEntry_t* n = &this->nodes[i];
         values |= (n->alive && n->cfgState == CFG_STATE_DONE) ? n->inValues : n->inLost;
     }
+    if (this->statusBit >= 0 && this->networkOk()) values |= (uint16_t)(1u << this->statusBit);
     return values;
 }
 
@@ -468,6 +507,12 @@ uint16_t CanHub::runningMask()
 
 void CanHub::service(uint32_t now, bool quiet, bool safe, uint16_t outputs)
 {
+    this->quiet = quiet;
+    if (!this->started)
+    {
+        this->started = true;
+        this->bootStart = now;
+    }
     this->can->service();
 
     canFrame_t f;
@@ -529,21 +574,77 @@ void CanHub::service(uint32_t now, bool quiet, bool safe, uint16_t outputs)
         if (u->used && (now - u->lastSeen) > CAN_UNKNOWN_FORGET_MS) u->used = false;
     }
 
-    if (!quiet)
+    // once, after the nodes had time to answer; printed even if LinuxCNC already runs (hardly
+    // this early): the user relies on it, and it costs the link one reconnect at most
+    if (!this->bootReported && (now - this->bootStart) >= CAN_BOOT_REPORT_MS)
     {
-        this->report(now);
-
-        // bus diagnosis while a node is missing: no ACK = wiring / termination / node not running
-        if ((missing || this->nodeCount == 0) && (now - this->lastStatus) >= 2000)
-        {
-            this->lastStatus = now;
-            this->can->printStatus();
-        }
+        this->bootReported = true;
+        this->bootReport();
     }
+
+    if (!quiet && this->bootReported) this->report();
 }
 
 
-void CanHub::report(uint32_t now)
+void CanHub::bootReport()
+{
+    int online = 0;
+    for (int i = 0; i < this->nodeCount; i++) if (this->nodes[i].alive) online++;
+
+    printf("\nCAN network at boot: %d of %d configured node(s) online\n", online, this->nodeCount);
+
+    char name[6];
+    for (int i = 0; i < this->nodeCount; i++)
+    {
+        canNodeEntry_t* n = &this->nodes[i];
+        printf("  node %-2d ", n->node);
+        printUuid(n->uuid);
+        printf("  %-10s %-9s ", n->comment, n->mandatory ? "mandatory" : "optional");
+
+        if (!n->alive) printf("MISSING\n");
+        else if (n->cfgState == CFG_STATE_DONE) printf("online, configured, %d module(s)\n", n->moduleCount);
+        else if (n->cfgState == CFG_STATE_FAILED)
+        {
+            printf("online, configuration REJECTED");
+            if (n->cfgErrIndex >= 1 && n->cfgErrIndex <= n->moduleCount)
+            {
+                printf(", module %d (%s)", n->cfgErrIndex, canPinName(n->modules[n->cfgErrIndex - 1][1], name));
+            }
+            printf(": %s\n", canConfigError(n->cfgErrStatus));
+        }
+        else printf("online, configuring\n");
+
+        // summarised here, later changes are printed by report()
+        n->reported = false;
+        n->cfgReport = CFG_REPORT_NONE;
+    }
+
+    for (int i = 0; i < CAN_UNKNOWN_MAX; i++)
+    {
+        canUnknownEntry_t* u = &this->unknown[i];
+        if (!u->used) continue;
+        u->printed = true;
+        printf("  unknown ");
+        printUuid(u->uuid);
+        printf("  not in config.txt, add it to \"CAN\" \"Nodes\"\n");
+    }
+    this->unknownNew = false;
+
+    if (this->statusBit >= 0)
+    {
+        printf("  status bit remora.input.%02d = %s\n", this->statusBit,
+               this->networkOk() ? "1, all mandatory nodes running" : "0, mandatory node(s) missing: LinuxCNC stays in E-stop");
+    }
+    else if (this->nodeCount)
+    {
+        printf("  no \"Status Bit\" in \"CAN\": LinuxCNC does NOT see a missing or lost node\n");
+    }
+    this->can->printStatus();
+    printf("\n");
+}
+
+
+void CanHub::report()
 {
     for (int i = 0; i < this->nodeCount; i++)
     {
@@ -553,6 +654,7 @@ void CanHub::report(uint32_t now)
 
         printf("CAN: node %d (%s) %s", n->node, n->comment, n->alive ? "online" : "LOST");
         if (n->alive) printf(", state %d, errors %d", n->state, n->errors);
+        else if (n->mandatory && this->statusBit >= 0) printf(", mandatory: status bit 0, E-stop");
         printf("\n");
     }
 
@@ -584,15 +686,15 @@ void CanHub::report(uint32_t now)
         }
     }
 
-    // nodes on the bus without an entry in config.txt: right away, then every few seconds
-    if (this->unknownNew || (now - this->lastUnknownPrint) >= CAN_UNKNOWN_PRINT_MS)
+    // nodes on the bus without an entry in config.txt, once each (the boot summary lists them all)
+    if (this->unknownNew)
     {
         this->unknownNew = false;
-        this->lastUnknownPrint = now;
 
         for (int i = 0; i < CAN_UNKNOWN_MAX; i++)
         {
-            if (!this->unknown[i].used) continue;
+            if (!this->unknown[i].used || this->unknown[i].printed) continue;
+            this->unknown[i].printed = true;
             printf("CAN: unknown node UUID ");
             printUuid(this->unknown[i].uuid);
             printf(" on the bus, add it to \"CAN\" \"Nodes\" in config.txt\n");

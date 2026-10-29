@@ -354,12 +354,16 @@ void configCan()
     }
     canHub->reserveBits(localOutputs, localInputs);
 
+    // LinuxCNC input bit: 1 while all mandatory nodes run, goes into the E-stop chain in HAL
+    if (cfg.containsKey("Status Bit")) canHub->setStatusBit(cfg["Status Bit"] | -1);
+
     JsonArray nodes = cfg["Nodes"];
     for (JsonArray::iterator it = nodes.begin(); it != nodes.end(); ++it)
     {
         JsonObject n = *it;
         int number = n["Node"] | 0;
-        if (!canHub->addNode(n["UUID"] | "", number, n["Comment"] | "")) continue;
+        bool mandatory = strcmp(n["Mandatory"] | "True", "False") != 0;       // default: mandatory
+        if (!canHub->addNode(n["UUID"] | "", number, n["Comment"] | "", mandatory)) continue;
 
         // the node's modules, same keys as the local modules
         JsonArray modules = n["Modules"];

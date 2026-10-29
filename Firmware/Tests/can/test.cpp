@@ -76,10 +76,10 @@ int main(int argc, char** argv) {
         Node a(1, 2, 3), u(7, 8, 9);
         RemoraCAN hc; CanHub hub(&hc);
         hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
-        run(hub, {&a, &u}, now, 1500);
+        run(hub, {&a, &u}, now, 3000);
         CHECK(a.node->getNode() == 1 && u.node->getNode() == 0);
         CHECK(hub.aliveMask() == 0x1);
-        printf("  (unknown node UUID %s should be printed above, again every 5 s)\n", hex(u.node->getUuid()).c_str());
+        printf("  (unknown node UUID %s should be in the boot summary above)\n", hex(u.node->getUuid()).c_str());
     }
     else if (sc == "lost") {
         Node a(1, 2, 3);
@@ -228,6 +228,41 @@ int main(int argc, char** argv) {
         simSafe = false; simOutputs = 1u << 1;
         run(hub, {&a}, now, 50);
         CHECK(a.io.level[PB8] == true);
+    }
+    else if (sc == "mandatory") {
+        Node a(1, 2, 3), b(4, 5, 6);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.reserveBits(0, 1u << 0);                            /* hub's own input 0 */
+        CHECK(!hub.setStatusBit(0) && !hub.setStatusBit(16));
+        CHECK(hub.setStatusBit(15));
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");               /* mandatory by default */
+        hub.addNode(hex(b.node->getUuid()).c_str(), 2, "camera", false);          /* optional */
+        CHECK(!hub.addDigitalPin(1, "PB_9", false, false, 0, false, false, 15));  /* the status bit */
+        const uint16_t S = 1u << 15;
+        CHECK((hub.inputMask() & S) && !(hub.inputValues() & S));                /* nothing online: E-stop */
+        b.can.alive = false;                                                     /* optional node missing */
+        run(hub, {&a, &b}, now, 3000);
+        CHECK(hub.runningMask() == 0x1 && (hub.inputValues() & S));              /* boot summary printed above */
+        a.can.alive = false;                                                     /* mandatory node lost */
+        run(hub, {&a, &b}, now, 400);
+        CHECK(!(hub.inputValues() & S));
+        printf("  (\"LOST, mandatory: status bit 0, E-stop\" above)\n");
+        a.can.alive = true;
+        run(hub, {&a, &b}, now, 1500);
+        CHECK(hub.runningMask() == 0x1 && (hub.inputValues() & S));              /* back and configured */
+        b.can.alive = true;
+        run(hub, {&a, &b}, now, 1500);
+        b.can.alive = false;
+        run(hub, {&a, &b}, now, 400);
+        CHECK(hub.runningMask() == 0x1 && (hub.inputValues() & S));              /* optional node lost: no E-stop */
+    }
+    else if (sc == "no-status-bit") {
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        run(hub, {&a}, now, 3000);
+        CHECK(hub.inputMask() == 0);
+        printf("  (\"no \\\"Status Bit\\\"\" warning in the boot summary above)\n");
     }
     printf("%s\n", fails ? "FAILED" : "passed");
     return fails != 0;

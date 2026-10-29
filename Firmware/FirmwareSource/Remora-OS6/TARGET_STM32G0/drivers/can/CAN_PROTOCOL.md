@@ -51,7 +51,7 @@ Node numbers 1 ... 15. Lower identifier = higher priority on the bus.
 - A node with a configured UUID but the wrong number gets `LSS ASSIGN`
   (byte 0 = `0x02`, bytes 1-6 UUID, byte 7 node number) and confirms with a
   new LSS REPLY. Unknown UUIDs are printed on the hub's debug console when
-  they appear and again every 5 s, copy them into `config.txt`; they are
+  they appear and in the boot summary, copy them into `config.txt`; they are
   assigned number 0 (unassigned).
 - An assigned node sends a HEARTBEAT every 100 ms: state, protocol version,
   CAN error counter, uptime. The hub marks a node lost after 350 ms without
@@ -113,6 +113,35 @@ pull down, open drain), node local data bit.
 - The hub maps the node local bits onto the LinuxCNC bits; latency is a few
   milliseconds (main loop, not the servo thread), fine for switches, LEDs and
   relays, not for a probe that needs the exact trigger position.
+
+## Mandatory nodes and E-stop
+
+Every node is mandatory unless its entry says `"Mandatory": "False"`.
+`"CAN" "Status Bit"` is a LinuxCNC input bit that is 1 only while every
+mandatory node is online and configured:
+
+```json
+"CAN": { "Bitrate": 1000000, "Status Bit": 15, "Nodes": [ ... ] }
+```
+
+It goes into the E-stop chain in HAL, e.g.
+
+```
+net can-ok remora.input.15 => iocontrol.0.emc-enable-in
+```
+
+(or into the existing `and2` / estop_latch chain). LinuxCNC then cannot leave
+E-stop while a mandatory node is missing, and goes to E-stop when one is lost
+(no heartbeat for 350 ms), rejects its configuration or reboots (bit 0 until
+it is configured again). An optional node going away only switches its inputs
+to their `"Lost State"`. Without a status bit LinuxCNC does not see node
+failures; the boot summary warns about it.
+
+At boot (2.5 s after the start) the hub prints the network once: every
+configured node with mandatory / optional and online / configured /
+REJECTED / MISSING, the unknown UUIDs on the bus, the status bit and the bus
+counters. After that only changes are printed (and nothing while LinuxCNC
+runs); reset the board to see the summary again.
 
 ## Next phases
 

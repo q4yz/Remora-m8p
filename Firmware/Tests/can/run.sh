@@ -9,7 +9,8 @@ cp $D/CanHub.* $D/CanNode.* $D/canProtocol.h $D/canNodeIo.h stubs/RemoraCAN.h st
 g++ -std=c++14 -O1 -g -Wall -Wextra -Istubs -I"$B" -include vector test.cpp "$B"/CanHub.cpp "$B"/CanNode.cpp "$B"/canNodeIoSim.cpp -o "$B"/test || exit 1
 r=0
 for s in uuid assign two-nodes unknown lost node-reboot bad-config \
-         pins config-io hub-lost node-reboot-config rejected bit-conflict lossy; do "$B"/test $s || r=1; done
+         pins config-io hub-lost node-reboot-config rejected bit-conflict lossy \
+         mandatory no-status-bit; do "$B"/test $s || r=1; done
 rm -rf "$B"
 echo "ALL: $([ $r = 0 ] && echo PASSED || echo FAILED)"
 exit $r

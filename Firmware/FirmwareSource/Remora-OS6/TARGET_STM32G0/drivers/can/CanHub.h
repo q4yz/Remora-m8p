@@ -19,9 +19,14 @@
                               "Modules": [ { "Type": "Digital Pin", "Pin": "PB_8",
                                              "Mode": "Output", "Data Bit": 1 } ] } ] }
 
-    Unknown nodes are reported with their UUID every few seconds so it can be
-    copied into the config. service() runs in the main loop; while quiet (SPI link running)
-    nothing is printed, a blocking printf would make the board miss frames.
+    "Mandatory": "False" on a node makes it optional. "CAN" "Status Bit" is a
+    LinuxCNC input bit that is 1 only while every mandatory node is online and
+    configured; in HAL it goes into the E-stop chain, so LinuxCNC cannot leave
+    E-stop while one is missing and goes to E-stop when one is lost.
+
+    The network (configured and unknown nodes) is printed once at boot, then
+    only changes. service() runs in the main loop; while quiet (SPI link
+    running) nothing is printed, a blocking printf would make the board miss frames.
 ************************************************************************/
 
 typedef struct
@@ -29,6 +34,7 @@ typedef struct
     uint8_t  uuid[6];
     uint8_t  node;              // configured node number
     char     comment[24];
+    bool     mandatory;         // missing / not configured: status bit off (LinuxCNC E-stop)
     bool     alive;
     bool     reported;          // state change waiting to be printed
     uint8_t  state;             // NODE_STATE_* from the last heartbeat
@@ -76,13 +82,14 @@ typedef struct
 
 #define CAN_UNKNOWN_MAX         4
 #define CAN_IDLE_IDENTIFY_MS    5000        // IDENTIFY while all nodes are online (not while running)
-#define CAN_UNKNOWN_PRINT_MS    5000        // repeat the unknown UUIDs on the console
+#define CAN_BOOT_REPORT_MS      2500        // network summary this long after the start
 #define CAN_UNKNOWN_FORGET_MS   12000       // unknown node gone: no reply to two IDENTIFYs
 
 typedef struct
 {
     uint8_t  uuid[6];
     bool     used;
+    bool     printed;
     uint32_t lastSeen;          // ms
 } canUnknownEntry_t;
 
@@ -94,8 +101,11 @@ class CanHub
         canNodeEntry_t  nodes[CAN_NODE_MAX];
         int             nodeCount;
         uint32_t        lastIdentify;
-        uint32_t        lastStatus;         // ms, bus status print while nodes are missing
-        uint32_t        lastUnknownPrint;   // ms
+        bool            quiet;          // LinuxCNC runs: no debug prints (the console blocks the main loop)
+        uint32_t        bootStart;          // ms, first service() call
+        bool            started;
+        bool            bootReported;
+        int             statusBit;          // LinuxCNC input bit: all mandatory nodes running, -1: none
 
         canUnknownEntry_t unknown[CAN_UNKNOWN_MAX];     // nodes on the bus that are not in config.txt
         bool            unknownNew;         // a new one, print right away
@@ -113,17 +123,24 @@ class CanHub
         void sendCommand(canNodeEntry_t* n, uint16_t outputs, bool safe, uint32_t now);
         void sendIdentify(void);
         void sendAssign(const uint8_t uuid[6], uint8_t node);
-        void report(uint32_t now);
+        void report(void);
+        void bootReport(void);
         void rememberUnknown(const uint8_t uuid[6], uint32_t now);
 
     public:
 
         CanHub(RemoraCAN* can);
 
-        bool addNode(const char* uuidHex, int node, const char* comment);
+        // mandatory: LinuxCNC must not run without this node (status bit)
+        bool addNode(const char* uuidHex, int node, const char* comment, bool mandatory = true);
 
         // LinuxCNC data bits used by the hub's own Digital Pin modules, call before addDigitalPin
         void reserveBits(uint16_t outputs, uint16_t inputs);
+
+        // LinuxCNC input bit, 1 while every mandatory node is online and configured; wired
+        // into the E-stop chain in HAL. Call after reserveBits, before addDigitalPin
+        bool setStatusBit(int bit);
+        bool networkOk(void);
 
         // a "Digital Pin" module of a node; lostHigh: input value LinuxCNC sees while the node is lost
         bool addDigitalPin(int node, const char* pin, bool output, bool invert, uint8_t modifier,
