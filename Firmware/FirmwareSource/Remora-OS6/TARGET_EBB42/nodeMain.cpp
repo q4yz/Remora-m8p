@@ -1,9 +1,10 @@
 /***********************************************************************
     Remora CAN node firmware for the BTT EBB42 V1.1 / V1.2 (STM32G0B1CBT6)
 
-    Takes its node number and its modules (digital pins so far) from the hub
-    and exchanges the process data with it (CAN_PROTOCOL.md, CanNode).
-    Extruder, heater, thermistor and fans follow in the next phases.
+    Takes its node number and its modules (digital pins, step generators) from
+    the hub and exchanges the process data with it (CAN_PROTOCOL.md, CanNode).
+    Heater, thermistor and fans follow in the next phases. The step pulses are
+    made in a TIM6 interrupt at CAN_NODE_BASE_FREQ (CanNode::baseTick).
 
     EBB42: CAN on PB0 (RX) / PB1 (TX) = FDCAN2, 8 MHz crystal, no bootloader,
     flashed over USB in DFU mode at 0x08000000, 120R termination by jumper.
@@ -36,6 +37,34 @@ static const char* stateName(uint8_t state)
     return "?";
 }
 
+static CanNode* baseNode = nullptr;
+
+static void baseThreadIrq()
+{
+    if (TIM6->SR & TIM_SR_UIF)
+    {
+        TIM6->SR = ~TIM_SR_UIF;
+        baseNode->baseTick();
+    }
+}
+
+// TIM6 (basic timer, no pins; TIM2 is the mbed us ticker), highest priority: steady step timing
+static void startBaseThread(CanNode* node)
+{
+    baseNode = node;
+    __HAL_RCC_TIM6_CLK_ENABLE();
+    TIM6->CR1 = 0;
+    TIM6->PSC = 0;
+    TIM6->ARR = SystemCoreClock / CAN_NODE_BASE_FREQ - 1;
+    TIM6->EGR = TIM_EGR_UG;
+    TIM6->SR = 0;
+    TIM6->DIER = TIM_DIER_UIE;
+    NVIC_SetVector(TIM6_DAC_LPTIM1_IRQn, (uint32_t)baseThreadIrq);
+    NVIC_SetPriority(TIM6_DAC_LPTIM1_IRQn, 0);
+    NVIC_EnableIRQ(TIM6_DAC_LPTIM1_IRQn);
+    TIM6->CR1 = TIM_CR1_CEN;
+}
+
 int main()
 {
     Watchdog& watchdog = Watchdog::get_instance();
@@ -52,6 +81,8 @@ int main()
     printf("\nRemora CAN node, BTT EBB42\n");
     printf("UUID %s, SystemCoreClock %lu Hz\n", uuid, (unsigned long)SystemCoreClock);
     can.start();                            // prints the result
+    startBaseThread(&node);
+    printf("base thread %d Hz (step generators)\n", CAN_NODE_BASE_FREQ);
 
     uint32_t lastStatus = 0;
 
@@ -71,6 +102,12 @@ int main()
             printf("node: %d module(s), %lu COMMAND frame(s), outputs 0x%04x, inputs 0x%04x\n",
                    node.getModuleCount(), (unsigned long)node.getCommandCount(),
                    node.getOutputs(), node.getInputs());
+            for (int j = 0; j < node.getJointCount(); j++)
+            {
+                printf("node: joint %d %s, position %ld steps, %lu JOINT frame(s)\n", j,
+                       node.getJointEnabled(j) ? "enabled" : "disabled", (long)node.getJointPosition(j),
+                       (unsigned long)node.getJointFrames());
+            }
             can.printStatus();
         }
     }

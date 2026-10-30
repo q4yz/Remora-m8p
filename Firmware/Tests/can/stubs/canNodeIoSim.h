@@ -8,6 +8,7 @@ struct SimIo
     bool output[96] = {};
     bool level[96] = {};          /* output: driven level, input: level applied from outside */
     uint8_t modifier[96] = {};
+    int rises[96] = {};           /* low -> high edges written, e.g. step pulses */
     int configures = 0;
 };
 

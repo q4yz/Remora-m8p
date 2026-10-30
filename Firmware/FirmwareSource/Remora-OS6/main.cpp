@@ -352,12 +352,19 @@ void configCan()
 
     canHub = new CanHub(canBus);
 
-    // data bits of the hub's own Digital Pin modules, the nodes must not use them
+    // data bits of the hub's own Digital Pin modules and joints of its Stepgen modules, the nodes must not use them
     uint16_t localOutputs = 0, localInputs = 0;
+    uint8_t localJoints = 0;
     JsonArray local = doc["Modules"];
     for (JsonArray::iterator it = local.begin(); it != local.end(); ++it)
     {
         JsonObject m = *it;
+        if (!strcmp(m["Type"] | "", "Stepgen"))
+        {
+            int joint = m["Joint Number"] | -1;
+            if (joint >= 0 && joint < JOINTS) localJoints |= (uint8_t)(1u << joint);
+            continue;
+        }
         if (strcmp(m["Type"] | "", "Digital Pin")) continue;
         int bit = m["Data Bit"] | -1;
         if (bit < 0 || bit > 15) continue;
@@ -365,6 +372,7 @@ void configCan()
         else localInputs |= (uint16_t)(1u << bit);
     }
     canHub->reserveBits(localOutputs, localInputs);
+    canHub->reserveJoints(localJoints);
 
     // LinuxCNC input bit: 1 while all mandatory nodes run, goes into the E-stop chain in HAL
     if (cfg.containsKey("Status Bit")) canHub->setStatusBit(cfg["Status Bit"] | -1);
@@ -397,6 +405,11 @@ void configCan()
                                       !strcmp(m["Safe State"] | "Low", "High"),
                                       !strcmp(m["Lost State"] | "Low", "High"),
                                       m["Data Bit"] | -1);
+            }
+            else if (!strcmp(type, "Stepgen"))
+            {
+                canHub->addStepgen(number, m["Joint Number"] | -1, m["Step Pin"] | "", m["Direction Pin"] | "",
+                                   m["Enable Pin"] | "");
             }
             else
             {
@@ -841,6 +854,18 @@ int main()
       }
 
     comms->SPItasks();
+
+#ifdef CAN_HUB
+    // remote joints: the new frequency commands go to the nodes right after each WRITE frame
+    if (canHub && canHub->jointMask())
+    {
+        static uint32_t writes = 0;
+        bool fresh = comms->dbgWrites != writes;
+        writes = comms->dbgWrites;
+        canHub->serviceJoints(HAL_GetTick(), fresh, commsLost, rxData.jointFreqCmd, rxData.jointEnable,
+                              txData.jointFeedback);
+    }
+#endif
 
     //ThisThread::sleep_for(LOOP_TIME);
     //wait(LOOP_TIME);

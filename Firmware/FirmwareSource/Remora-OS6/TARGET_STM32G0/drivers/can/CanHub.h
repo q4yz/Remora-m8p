@@ -13,6 +13,9 @@
              every frame acknowledged), again after a node reboot
     phase 3  digital outputs to the nodes (COMMAND), digital inputs from
              them (STATUS), mapped onto the LinuxCNC data bits
+    joints   "Stepgen" modules on nodes: the LinuxCNC frequency commands go
+             out in a JOINT frame right after each SPI WRITE, the step counts
+             come back in JOINT FEEDBACK and go into the joint feedback
 
         "CAN": { "Bitrate": 1000000,
                  "Nodes": [ { "UUID": "0e0d81e4210c", "Node": 1, "Comment": "toolhead",
@@ -66,7 +69,19 @@ typedef struct
     uint8_t  lastFlags;
     uint32_t lastCommand;       // ms
     bool     commandSent;       // since the last configuration (debug print)
+
+    // joints: node local joint i is LinuxCNC joint jointNum[i]
+    uint8_t  jointNum[CAN_NODE_JOINTS];
+    uint8_t  jointCount;
+    int32_t  jointPos[CAN_NODE_JOINTS];     // step count, extended from the 24 bits in JOINT FEEDBACK
+    uint32_t jointRaw[CAN_NODE_JOINTS];     // last 24-bit count from the node
+    uint8_t  jointSeq;
+    bool     jointPending;      // new LinuxCNC commands not sent yet (TX queue full)
+    uint32_t lastJoint;         // ms, last JOINT frame
+    uint32_t jointFeedbacks;    // JOINT FEEDBACK frames received (debug)
 } canNodeEntry_t;
+
+#define CAN_HUB_JOINTS          8           // LinuxCNC joints (JOINTS in configuration.h)
 
 #define CFG_STATE_NEEDED        0       // send the configuration when the node is online
 #define CFG_STATE_SENDING       1
@@ -112,12 +127,16 @@ class CanHub
 
         uint16_t        usedOutputs;        // LinuxCNC data bits already taken (local pins and nodes)
         uint16_t        usedInputs;
+        uint8_t         usedJoints;         // LinuxCNC joints already taken (local stepgens and nodes)
 
         canNodeEntry_t* findNode(uint8_t node);
+        bool pinUsed(const canNodeEntry_t* n, uint8_t pin);
         void handleLssReply(const canFrame_t& frame, uint32_t now);
         void handleHeartbeat(const canFrame_t& frame, uint32_t now);
         void handleConfigReply(const canFrame_t& frame, uint32_t now);
         void handleStatus(const canFrame_t& frame);
+        void handleJointFeedback(const canFrame_t& frame);
+        bool sendJoint(canNodeEntry_t* n, const volatile int32_t* freq, uint8_t enable, bool safe);
         void sendConfigStep(canNodeEntry_t* n, uint32_t now);
         void serviceConfig(canNodeEntry_t* n, uint32_t now);
         void sendCommand(canNodeEntry_t* n, uint16_t outputs, bool safe, uint32_t now);
@@ -146,8 +165,21 @@ class CanHub
         bool addDigitalPin(int node, const char* pin, bool output, bool invert, uint8_t modifier,
                            bool safeHigh, bool lostHigh, int dataBit);
 
+        // LinuxCNC joints of the hub's own Stepgen modules, call before addStepgen
+        void reserveJoints(uint8_t joints);
+
+        // a "Stepgen" module of a node; enablePin "" or nullptr: none
+        bool addStepgen(int node, int joint, const char* stepPin, const char* dirPin, const char* enablePin);
+
         // outputs: rxData.outputs; safe: LinuxCNC gone, node outputs to their safe state
         void service(uint32_t now, bool quiet, bool safe = true, uint16_t outputs = 0);
+
+        // remote joints, call in the main loop after the SPI frames are handled. fresh: a new
+        // WRITE frame (new frequency commands) since the last call; freq, enable: rxData.jointFreqCmd,
+        // rxData.jointEnable; feedback: txData.jointFeedback, the remote joints are written
+        void serviceJoints(uint32_t now, bool fresh, bool safe, const volatile int32_t* freq, uint8_t enable,
+                           volatile int32_t* feedback);
+        uint8_t jointMask(void);            // LinuxCNC joints served by nodes
 
         // LinuxCNC input bits served by nodes and their values: inputs = (inputs & ~mask) | values
         uint16_t inputMask(void);

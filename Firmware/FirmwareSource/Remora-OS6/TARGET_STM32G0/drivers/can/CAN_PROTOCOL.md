@@ -14,8 +14,10 @@ could disturb the base thread).
 
 | Identifier | Name | Direction | Phase |
 |---|---|---|---|
-| `0x080` | SYNC | hub → all | 4 |
+| `0x080` | SYNC | hub → all | reserved |
 | `0x080 + n` | EMCY | node → hub | 5 |
+| `0x100 + n` | JOINT (step generator commands) | hub → node | joints |
+| `0x180 + n` | JOINT FEEDBACK (step counts) | node → hub | joints |
 | `0x200 + n` | COMMAND (process data) | hub → node | 3/4 |
 | `0x280 + n` | STATUS (process data) | node → hub | 3/4 |
 | `0x580 + n` | CONFIG REPLY | node → hub | 2 |
@@ -98,9 +100,12 @@ printed on the hub console and not retried until the node reboots. The hub
 sends the configuration again whenever a node comes back or reports a state
 other than RUNNING / SAFE (it rebooted).
 
-Module types: `0x01` digital pin, data: pin (`port << 4 | number`, port 0 =
-A), flags (bit 0 output, 1 invert, 2 safe high, 4-5 modifier: none, pull up,
-pull down, open drain), node local data bit.
+Module types (pins as `port << 4 | number`, port 0 = A, `0xFF` none):
+
+- `0x01` digital pin, data: pin, flags (bit 0 output, 1 invert, 2 safe high,
+  4-5 modifier: none, pull up, pull down, open drain), node local data bit.
+- `0x02` stepgen, data: step pin, 0, node local joint (0 or 1), direction
+  pin, enable pin (active low, `0xFF`: none).
 
 ## Process data (phase 3)
 
@@ -143,11 +148,42 @@ REJECTED / MISSING, the unknown UUIDs on the bus, the status bit and the bus
 counters. After that only changes are printed (and nothing while LinuxCNC
 runs); reset the board to see the summary again.
 
+## Joints (remote step generators)
+
+A `"Stepgen"` module in a node entry is a LinuxCNC joint like a local one,
+same keys; `"Enable Pin"` may be left out:
+
+```json
+{ "Type": "Stepgen", "Comment": "extruder", "Joint Number": 3,
+  "Step Pin": "PD_0", "Direction Pin": "PD_1", "Enable Pin": "PD_2" }
+```
+
+The joint must not be used by a Stepgen of the hub or another node; up to 2
+joints per node. LinuxCNC sees no difference: `remora.joint.3.*` as usual.
+
+- JOINT `0x100 + n`, hub → node, right after every SPI WRITE from LinuxCNC
+  (once per servo period), at least every 3 ms without LinuxCNC: byte 0
+  enable bits (node local joints), byte 1 sequence, then per joint the
+  frequency command, 24-bit signed, steps / s.
+- JOINT FEEDBACK `0x180 + n`, node → hub, the answer to every JOINT: byte 0
+  the sequence answered, byte 1 the enabled joints, then per joint the low 24
+  bits of the step count. The hub extends them to 32 bits into the joint
+  feedback; after a node reboot the count LinuxCNC sees carries on, no jump.
+- The node runs the same DDS as the Remora stepgen in its own base thread at
+  40 kHz (max 20 kHz step rate, pulses one base period = 25 µs long) and takes
+  each command as it arrives.
+- Node without JOINT for 10 ms: joints stop, drivers disabled, until JOINT
+  comes back. Also disabled in state SAFE and while LinuxCNC is gone.
+
+Latency: the feedback is one servo period older than for a local joint
+(about 1 ms), LinuxCNC sees a slightly larger following error at speed
+(velocity × 1 ms); `FERROR` / `MIN_FERROR` must allow for it. Bus load: one
+JOINT and one JOINT FEEDBACK (~130 µs each at 1 Mbit/s) per node and servo
+period, about 26 % of the bus per node with joints.
+
 ## Next phases
 
 3. **Remote modules**: temperature, heater, fans via SP / PV indices; the
-   hotend fan rule runs locally on the node.
-4. **Remote stepgen**: SYNC once per servo period, the node applies the speed
-   command at SYNC and runs its own stepgen; the step count goes back in STATUS.
-5. **Safety**: node watchdog (no SYNC for 5 ms → stop, outputs safe), node
-   status bits to LinuxCNC in the 2 spare bytes of the SPI frame.
+   hotend fan rule runs locally on the node; TMC2209 UART on the node.
+5. **Safety**: EMCY frames, node status bits to LinuxCNC in the 2 spare bytes
+   of the SPI frame.

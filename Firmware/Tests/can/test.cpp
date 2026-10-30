@@ -16,15 +16,36 @@ struct Node { RemoraCAN can; CanNode* node; SimIo io; Node(uint32_t a, uint32_t 
 static bool simSafe = true;
 static uint16_t simOutputs = 0;
 static bool hubRuns = true;
+static int32_t simFreq[8];                 /* rxData.jointFreqCmd */
+static uint8_t simEnable = 0;              /* rxData.jointEnable */
+static int32_t simFeedback[8];             /* txData.jointFeedback */
 
+/* one LinuxCNC WRITE per ms, the node base thread at CAN_NODE_BASE_FREQ */
 static void run(CanHub& hub, std::vector<Node*> nodes, uint32_t& now, uint32_t ms, bool quiet = false) {
     for (uint32_t t = 0; t < ms; t++, now++) {
-        if (hubRuns) hub.service(now, quiet, simSafe, simOutputs);
-        for (Node* n : nodes) { simIo = &n->io; n->node->service(now); }
+        if (hubRuns) {
+            hub.service(now, quiet, simSafe, simOutputs);
+            hub.serviceJoints(now, !simSafe, simSafe, simFreq, simEnable, simFeedback);
+        }
+        for (Node* n : nodes) {
+            simIo = &n->io;
+            n->node->service(now);
+            for (int k = 0; k < CAN_NODE_BASE_FREQ / 1000; k++) n->node->baseTick();
+        }
     }
 }
 
 static const uint8_t PB8 = CAN_PIN(1, 8), PB9 = CAN_PIN(1, 9);
+static const uint8_t PD0 = CAN_PIN(3, 0), PD1 = CAN_PIN(3, 1), PD2 = CAN_PIN(3, 2);
+
+/* node with an extruder stepgen as LinuxCNC joint 3 (step PD_0, direction PD_1, enable PD_2), running */
+static void setupJoint(CanHub& hub, Node& a, uint32_t& now) {
+    hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+    CHECK(hub.addStepgen(1, 3, "PD_0", "PD_1", "PD_2"));
+    CHECK(hub.jointMask() == (1u << 3));
+    run(hub, {&a}, now, 1500);
+    CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getJointCount() == 1);
+}
 
 /* node with an output on PB_8 (LinuxCNC output bit 1, safe high) and an inverted, pulled up
    input on PB_9 (LinuxCNC input bit 3, reads 1 while the node is lost), configured and running */
@@ -263,6 +284,117 @@ int main(int argc, char** argv) {
         run(hub, {&a}, now, 3000);
         CHECK(hub.inputMask() == 0);
         printf("  (\"no \\\"Status Bit\\\"\" warning in the boot summary above)\n");
+    }
+    else if (sc == "joint") {
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        setupJoint(hub, a, now);
+        CHECK(a.io.output[PD0] && a.io.output[PD1] && a.io.output[PD2]);
+        CHECK(a.io.level[PD2] == true && !a.node->getJointEnabled(0));           /* LinuxCNC not there: disabled */
+        simSafe = false; simEnable = 1u << 3; simFreq[3] = 1000;               /* 1000 steps/s */
+        run(hub, {&a}, now, 2);
+        CHECK(a.node->getJointEnabled(0) && a.io.level[PD2] == false);         /* enable is active low */
+        run(hub, {&a}, now, 500);
+        int32_t steps = a.node->getJointPosition(0);
+        printf("  node %d steps, %d pulses, hub feedback %d\n", steps, a.io.rises[PD0], simFeedback[3]);
+        CHECK(steps >= 495 && steps <= 505);
+        CHECK(a.io.rises[PD0] == steps && a.io.level[PD1] == true);            /* forward */
+        CHECK(simFeedback[3] >= steps - 2 && simFeedback[3] <= steps);         /* one frame behind at most */
+        simFreq[3] = 0;
+        run(hub, {&a}, now, 5);
+        CHECK(simFeedback[3] == a.node->getJointPosition(0));                  /* stopped: exact */
+        simFreq[3] = 20000;                                                     /* max: half the base frequency */
+        int32_t before = a.node->getJointPosition(0);
+        run(hub, {&a}, now, 100);
+        printf("  20 kHz: %d steps in 100 ms\n", a.node->getJointPosition(0) - before);
+        CHECK(a.node->getJointPosition(0) - before >= 1990);
+        simEnable = 0;                                                          /* LinuxCNC disables the joint */
+        run(hub, {&a}, now, 2);
+        before = a.node->getJointPosition(0);
+        run(hub, {&a}, now, 20);
+        CHECK(!a.node->getJointEnabled(0) && a.io.level[PD2] == true && a.node->getJointPosition(0) == before);
+        simSafe = true;
+    }
+    else if (sc == "joint-reverse") {
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        setupJoint(hub, a, now);
+        simSafe = false; simEnable = 1u << 3; simFreq[3] = -2000;              /* backwards through 0: the 24-bit counts wrap */
+        run(hub, {&a}, now, 300);
+        run(hub, {&a}, now, 0);
+        simFreq[3] = 0;
+        run(hub, {&a}, now, 5);
+        printf("  node %d steps, hub feedback %d\n", a.node->getJointPosition(0), simFeedback[3]);
+        CHECK(a.node->getJointPosition(0) <= -595 && a.io.level[PD1] == false);
+        CHECK(simFeedback[3] == a.node->getJointPosition(0));
+        CHECK(canDelta24(0x000005, 0xFFFFFE) == 7 && canDelta24(0xFFFFFE, 0x000005) == -7);
+        simSafe = true;
+    }
+    else if (sc == "joint-hub-lost") {
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        setupJoint(hub, a, now);
+        simSafe = false; simEnable = 1u << 3; simFreq[3] = 5000;
+        run(hub, {&a}, now, 50);
+        CHECK(a.node->getJointEnabled(0));
+        hubRuns = false;                                                        /* hub hangs */
+        run(hub, {&a}, now, 12);                                                /* > CAN_JOINT_TIMEOUT_MS */
+        int32_t pos = a.node->getJointPosition(0);
+        run(hub, {&a}, now, 20);
+        CHECK(!a.node->getJointEnabled(0) && a.io.level[PD2] == true && a.node->getJointPosition(0) == pos);
+        hubRuns = true;
+        run(hub, {&a}, now, 5);
+        CHECK(a.node->getJointEnabled(0) && a.node->getJointPosition(0) > pos);  /* runs again */
+        simSafe = true;                                                         /* LinuxCNC gone */
+        run(hub, {&a}, now, 5);
+        CHECK(!a.node->getJointEnabled(0));
+    }
+    else if (sc == "joint-config") {
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode("0e0d81e4210c", 1, "");
+        hub.reserveJoints(1u << 0);                                             /* hub's own stepgen */
+        CHECK(!hub.addStepgen(1, 0, "PD_0", "PD_1", "PD_2"));                   /* joint taken */
+        CHECK(!hub.addStepgen(1, 8, "PD_0", "PD_1", "PD_2"));                   /* out of range */
+        CHECK(!hub.addStepgen(1, 3, "PD_0", "PD_0", ""));                       /* same pin twice */
+        CHECK(!hub.addStepgen(1, 3, "PD_0", "XD_1", ""));
+        CHECK(!hub.addStepgen(2, 3, "PD_0", "PD_1", ""));                       /* no node 2 */
+        CHECK(hub.addStepgen(1, 3, "PD_0", "PD_1", ""));                        /* no enable pin */
+        CHECK(!hub.addStepgen(1, 4, "PD_3", "PD_1", ""));                       /* direction pin taken */
+        CHECK(!hub.addDigitalPin(1, "PD_1", true, false, 0, false, false, 1));  /* stepgen pin taken */
+        CHECK(hub.addStepgen(1, 4, "PD_3", "PD_4", "PD_5"));
+        CHECK(!hub.addStepgen(1, 5, "PD_6", "PD_7", ""));                       /* 2 joints per node */
+        CHECK(hub.jointMask() == ((1u << 0) | (1u << 3) | (1u << 4)));
+        /* the node rejects a reserved pin (CAN RX) */
+        Node a(1, 2, 3);
+        RemoraCAN hc2; CanHub hub2(&hc2);
+        hub2.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub2.addStepgen(1, 3, "PD_0", "PB_0", ""));
+        run(hub2, {&a}, now, 3000);
+        CHECK(a.node->getState() == NODE_STATE_PREOP && hub2.runningMask() == 0);
+        CHECK(!a.io.configured[PD0]);
+    }
+    else if (sc == "joint-reboot") {
+        RemoraCAN hc; CanHub hub(&hc);
+        Node* a = new Node(1, 2, 3);
+        setupJoint(hub, *a, now);
+        simSafe = false; simEnable = 1u << 3; simFreq[3] = 1000;
+        run(hub, {a}, now, 200);
+        simFreq[3] = 0;
+        run(hub, {a}, now, 5);
+        int32_t pos = simFeedback[3];
+        CHECK(pos > 190);
+        delete a->node; sim_uid[0] = 1; sim_uid[1] = 2; sim_uid[2] = 3;
+        a->node = new CanNode(&a->can);                                         /* node resets: count 0 */
+        a->io = SimIo();
+        run(hub, {a}, now, 2500);
+        CHECK(a->node->getJointCount() == 1 && a->node->getJointPosition(0) == 0);
+        CHECK(simFeedback[3] == pos);                                           /* LinuxCNC sees no jump */
+        simFreq[3] = 1000;
+        run(hub, {a}, now, 100);
+        simFreq[3] = 0;
+        run(hub, {a}, now, 5);
+        CHECK(simFeedback[3] == pos + a->node->getJointPosition(0));
+        simSafe = true;
     }
     printf("%s\n", fails ? "FAILED" : "passed");
     return fails != 0;

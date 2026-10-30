@@ -39,7 +39,8 @@ CanHub::CanHub(RemoraCAN* can) :
     statusBit(-1),
     unknownNew(false),
     usedOutputs(0),
-    usedInputs(0)
+    usedInputs(0),
+    usedJoints(0)
 {
     memset(this->nodes, 0, sizeof(this->nodes));
     memset(this->unknown, 0, sizeof(this->unknown));
@@ -160,13 +161,10 @@ bool CanHub::addDigitalPin(int node, const char* pinName, bool output, bool inve
         printf("CAN: node %d: %s, %s data bit %d is already used\n", node, pinName, output ? "output" : "input", dataBit);
         return false;
     }
-    for (int i = 0; i < n->moduleCount; i++)
+    if (this->pinUsed(n, pin))
     {
-        if (n->modules[i][0] == MODULE_DIGITAL_PIN && n->modules[i][1] == pin)
-        {
-            printf("CAN: node %d: pin %s used twice\n", node, canPinName(pin, name));
-            return false;
-        }
+        printf("CAN: node %d: pin %s used twice\n", node, canPinName(pin, name));
+        return false;
     }
 
     uint8_t flags = (uint8_t)((modifier << DPIN_MOD_SHIFT) & DPIN_MOD_MASK);
@@ -202,6 +200,95 @@ bool CanHub::addDigitalPin(int node, const char* pinName, bool output, bool inve
 
     printf("CAN: node %d module %d: digital %s %s, LinuxCNC %s bit %d\n", node, n->moduleCount,
            output ? "output" : "input", canPinName(pin, name), output ? "output" : "input", dataBit);
+    return true;
+}
+
+
+// a pin of a module record (type, pin, flags, bit, pin 2, pin 3) of the node
+bool CanHub::pinUsed(const canNodeEntry_t* n, uint8_t pin)
+{
+    for (int i = 0; i < n->moduleCount; i++)
+    {
+        const uint8_t* m = n->modules[i];
+        if (m[1] == pin) return true;
+        if (m[0] == MODULE_STEPGEN && (m[4] == pin || m[5] == pin)) return true;
+    }
+    return false;
+}
+
+
+void CanHub::reserveJoints(uint8_t joints)
+{
+    this->usedJoints |= joints;
+}
+
+
+bool CanHub::addStepgen(int node, int joint, const char* stepName, const char* dirName, const char* enableName)
+{
+    canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
+    uint8_t step, dir, enable = CAN_PIN_NONE;
+    char name[6];
+
+    if (!n)
+    {
+        printf("CAN: module for node %d, which is not configured\n", node);
+        return false;
+    }
+    if (n->moduleCount >= CAN_MODULES_MAX)
+    {
+        printf("CAN: node %d: more than %d modules\n", node, CAN_MODULES_MAX);
+        return false;
+    }
+    if (n->jointCount >= CAN_NODE_JOINTS)
+    {
+        printf("CAN: node %d: more than %d joints\n", node, CAN_NODE_JOINTS);
+        return false;
+    }
+    if (joint < 0 || joint >= CAN_HUB_JOINTS)
+    {
+        printf("CAN: node %d: joint %d out of range 0 ... %d\n", node, joint, CAN_HUB_JOINTS - 1);
+        return false;
+    }
+    if (this->usedJoints & (1u << joint))
+    {
+        printf("CAN: node %d: joint %d is already used\n", node, joint);
+        return false;
+    }
+    if (!canParsePin(stepName, &step) || !canParsePin(dirName, &dir) ||
+        (enableName && *enableName && !canParsePin(enableName, &enable)))
+    {
+        printf("CAN: node %d: joint %d, invalid step / direction / enable pin\n", node, joint);
+        return false;
+    }
+    uint8_t pins[3] = { step, dir, enable };
+    for (int k = 0; k < 3; k++)
+    {
+        if (pins[k] == CAN_PIN_NONE) continue;
+        bool twice = this->pinUsed(n, pins[k]);
+        for (int l = 0; l < k; l++) if (pins[l] == pins[k]) twice = true;
+        if (twice)
+        {
+            printf("CAN: node %d: pin %s used twice\n", node, canPinName(pins[k], name));
+            return false;
+        }
+    }
+
+    uint8_t local = n->jointCount;
+    n->jointNum[n->jointCount++] = (uint8_t)joint;
+    this->usedJoints |= (uint8_t)(1u << joint);
+
+    uint8_t* m = n->modules[n->moduleCount++];
+    m[0] = MODULE_STEPGEN;
+    m[1] = step;
+    m[2] = 0;
+    m[3] = local;
+    m[4] = dir;
+    m[5] = enable;
+
+    char d[6], e[6];
+    printf("CAN: node %d module %d: stepgen, LinuxCNC joint %d, step %s, direction %s, enable %s\n", node,
+           n->moduleCount, joint, canPinName(step, name), canPinName(dir, d),
+           enable == CAN_PIN_NONE ? "none" : canPinName(enable, e));
     return true;
 }
 
@@ -406,6 +493,9 @@ void CanHub::handleConfigReply(const canFrame_t& frame, uint32_t now)
         n->cfgReport = CFG_REPORT_DONE;
         n->inValues = n->inLost;
         n->lastFlags = 0xFF;            // send the first COMMAND right away
+        // the node counts from 0 again, the position LinuxCNC sees carries on from where it was
+        for (int i = 0; i < CAN_NODE_JOINTS; i++) n->jointRaw[i] = 0;
+        n->jointPending = true;
         return;
     }
 
@@ -471,6 +561,80 @@ void CanHub::handleStatus(const canFrame_t& frame)
 }
 
 
+/***********************************************************************
+    Joints: JOINT after every LinuxCNC WRITE, JOINT FEEDBACK back
+************************************************************************/
+
+bool CanHub::sendJoint(canNodeEntry_t* n, const volatile int32_t* freq, uint8_t enable, bool safe)
+{
+    canFrame_t f;
+    f.id = CAN_ID_JOINT + n->node;
+    f.extended = false;
+    f.len = (uint8_t)(2 + 3 * n->jointCount);
+    f.data[0] = 0;
+    f.data[1] = (uint8_t)(n->jointSeq + 1);
+    for (int i = 0; i < n->jointCount; i++)
+    {
+        int joint = n->jointNum[i];
+        int32_t v = safe ? 0 : freq[joint];
+        if (v > CAN_FREQ_MAX) v = CAN_FREQ_MAX;
+        else if (v < -CAN_FREQ_MAX) v = -CAN_FREQ_MAX;
+        if (!safe && ((enable >> joint) & 1)) f.data[0] |= (uint8_t)(1u << i);
+        canPutInt24(&f.data[2 + 3 * i], v);
+    }
+    if (!this->can->send(f)) return false;
+    n->jointSeq++;
+    return true;
+}
+
+
+void CanHub::handleJointFeedback(const canFrame_t& frame)
+{
+    canNodeEntry_t* n = this->findNode((uint8_t)(frame.id - CAN_ID_JOINT_FEEDBACK));
+    if (!n || n->cfgState != CFG_STATE_DONE || frame.len < 2 + 3 * n->jointCount) return;
+
+    for (int i = 0; i < n->jointCount; i++)
+    {
+        uint32_t raw = canGetUint24(&frame.data[2 + 3 * i]);
+        n->jointPos[i] += canDelta24(raw, n->jointRaw[i]);
+        n->jointRaw[i] = raw;
+    }
+    n->jointFeedbacks++;
+}
+
+
+void CanHub::serviceJoints(uint32_t now, bool fresh, bool safe, const volatile int32_t* freq, uint8_t enable,
+                           volatile int32_t* feedback)
+{
+    for (int i = 0; i < this->nodeCount; i++)
+    {
+        canNodeEntry_t* n = &this->nodes[i];
+        if (!n->jointCount) continue;
+
+        // the last position stays while the node is lost: LinuxCNC sees a following error
+        for (int k = 0; k < n->jointCount; k++) feedback[n->jointNum[k]] = n->jointPos[k];
+
+        if (!n->alive || n->cfgState != CFG_STATE_DONE) continue;
+
+        // right after a WRITE frame; without LinuxCNC regularly, the node stops without JOINT
+        if (fresh) n->jointPending = true;
+        if (!n->jointPending && (now - n->lastJoint) < CAN_JOINT_REFRESH_MS) continue;
+
+        if (this->sendJoint(n, freq, enable, safe))
+        {
+            n->jointPending = false;
+            n->lastJoint = now;
+        }
+    }
+}
+
+
+uint8_t CanHub::jointMask()
+{
+    return this->usedJoints;
+}
+
+
 uint16_t CanHub::inputMask()
 {
     uint16_t mask = 0;
@@ -522,6 +686,10 @@ void CanHub::service(uint32_t now, bool quiet, bool safe, uint16_t outputs)
         if (f.extended)
         {
             if ((f.id & CAN_EXTID_LSS_MASK) == CAN_EXTID_LSS_REPLY) this->handleLssReply(f, now);
+        }
+        else if (f.id > CAN_ID_JOINT_FEEDBACK && f.id <= CAN_ID_JOINT_FEEDBACK + CAN_NODE_MAX)
+        {
+            this->handleJointFeedback(f);
         }
         else if (f.id > CAN_ID_STATUS && f.id <= CAN_ID_STATUS + CAN_NODE_MAX)
         {
@@ -586,6 +754,17 @@ void CanHub::service(uint32_t now, bool quiet, bool safe, uint16_t outputs)
 }
 
 
+// the pin a rejected module is about: the node reports it (a stepgen has three)
+static uint8_t errorPin(const canNodeEntry_t* n)
+{
+    switch (n->cfgErrStatus)
+    {
+        case CFG_ERR_PIN: case CFG_ERR_RESERVED: case CFG_ERR_PIN_USED: return n->cfgErrDetail;
+    }
+    return n->modules[n->cfgErrIndex - 1][1];
+}
+
+
 void CanHub::bootReport()
 {
     int online = 0;
@@ -602,13 +781,18 @@ void CanHub::bootReport()
         printf("  %-10s %-9s ", n->comment, n->mandatory ? "mandatory" : "optional");
 
         if (!n->alive) printf("MISSING\n");
-        else if (n->cfgState == CFG_STATE_DONE) printf("online, configured, %d module(s)\n", n->moduleCount);
+        else if (n->cfgState == CFG_STATE_DONE)
+        {
+            printf("online, configured, %d module(s)", n->moduleCount);
+            for (int k = 0; k < n->jointCount; k++) printf("%s%d", k ? ", " : ", joint(s) ", n->jointNum[k]);
+            printf("\n");
+        }
         else if (n->cfgState == CFG_STATE_FAILED)
         {
             printf("online, configuration REJECTED");
             if (n->cfgErrIndex >= 1 && n->cfgErrIndex <= n->moduleCount)
             {
-                printf(", module %d (%s)", n->cfgErrIndex, canPinName(n->modules[n->cfgErrIndex - 1][1], name));
+                printf(", module %d (%s)", n->cfgErrIndex, canPinName(errorPin(n), name));
             }
             printf(": %s\n", canConfigError(n->cfgErrStatus));
         }
@@ -675,7 +859,7 @@ void CanHub::report()
                 printf("CAN: node %d (%s) rejected its configuration", n->node, n->comment);
                 if (n->cfgErrIndex >= 1 && n->cfgErrIndex <= n->moduleCount)
                 {
-                    printf(", module %d (%s)", n->cfgErrIndex, canPinName(n->modules[n->cfgErrIndex - 1][1], name));
+                    printf(", module %d (%s)", n->cfgErrIndex, canPinName(errorPin(n), name));
                 }
                 printf(": %s\n", canConfigError(n->cfgErrStatus));
                 break;

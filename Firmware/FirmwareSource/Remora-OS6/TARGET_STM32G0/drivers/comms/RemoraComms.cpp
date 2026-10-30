@@ -196,8 +196,13 @@ void RemoraComms::SPItasks()
             // circular, every following frame would be shifted, so drop this one and re-align on
             // the next NSS edge, in normal operation as in upload mode. Counted in dbgTimeouts,
             // no printf (it blocks the main loop and costs more frames)
+            // While LinuxCNC is running (CommsStatus) a restart would send it a bad payload and E-stop
+            // the machine, there a shifted DMA shows up as bad headers and is handled below
             this->resetSPI = false;
-            this->restartDMA();
+            if (this->uploadMode || !this->CommsStatus)
+            {
+                this->restartDMA();
+            }
             return;
         }
 
@@ -246,8 +251,11 @@ void RemoraComms::SPItasks()
                     this->SPIdataError = true;
                 }
                 // shifted frames when the host sends faster than the DMA timeout above (LinuxCNC:
-                // every 1 ms), the next frame completes the count: re-align as well
-                if (this->rejectCnt >= 2)
+                // every 1 ms), the next frame completes the count: re-align as well. Only when the
+                // bad headers persist: a shifted DMA rejects every frame, while a single torn header
+                // (READ and WRITE back to back) is harmless. Restarting the DMA mid traffic sends the
+                // host a bad payload, remora-spi then drops SPI-status and the machine goes to E-stop
+                if (this->rejectCnt >= REJECT_REALIGN)
                 {
                     this->restartDMA();
                 }

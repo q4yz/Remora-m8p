@@ -3,9 +3,10 @@
 Expansion board for the Manta M8P hub, see
 `FirmwareSource/Remora-OS6/TARGET_STM32G0/drivers/can/CAN_PROTOCOL.md`.
 
-**State: phase 2.** The node joins the bus, gets its node number and its
-modules from the hub. Supported on the node so far: Digital Pin (inputs and
-outputs). Extruder, heater, thermistor and fans follow in the next phases.
+**State: phase 2 + joints.** The node joins the bus, gets its node number and
+its modules from the hub. Supported on the node so far: Digital Pin (inputs and
+outputs) and Stepgen (a LinuxCNC joint, e.g. the extruder motor). Heater,
+thermistor, fans and the TMC2209 UART follow in the next phases.
 
 ## Board facts
 
@@ -96,6 +97,27 @@ The M8P console then shows `CAN: node 1 (toolhead) configured, 1 module(s),
 running`, the EBB42 USB console the modules it received. `halcmd setp
 remora.output.01 1` switches PB8. Pins PB0 / PB1 (CAN) and PA11 / PA12 (USB)
 are reserved and rejected.
+
+## Stepper (joint)
+
+The EBB42 stepper (TMC2209: step PD0, direction PD1, enable PD2) as LinuxCNC
+joint 3, same keys as a Stepgen on the M8P:
+
+```json
+"Modules": [
+  { "Type": "Stepgen", "Comment": "extruder", "Joint Number": 3,
+    "Step Pin": "PD_0", "Direction Pin": "PD_1", "Enable Pin": "PD_2" } ]
+```
+
+The joint number must not be used by a Stepgen of the M8P. In HAL it is
+`remora.joint.3.*` like a local joint. The node makes the pulses itself at up
+to 20 kHz; the feedback reaches LinuxCNC about 1 ms later than for a local
+joint, so allow for a little more following error at speed. Without commands
+from the hub for 10 ms the motor stops and the driver is disabled.
+
+The TMC2209 UART (PA15) is not supported yet: the driver runs on its
+power-on defaults (microsteps from its MS pins, current from VREF), check the
+scale (steps per mm) with a test move.
 
 ## E-stop when the node is missing
 

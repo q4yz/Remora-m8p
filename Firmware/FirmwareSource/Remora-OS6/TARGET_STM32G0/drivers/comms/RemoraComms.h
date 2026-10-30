@@ -9,6 +9,8 @@
 
 #include "modules/module.h"
 
+#define REJECT_REALIGN      16      // consecutive bad headers before the DMA is re-aligned
+
 class RemoraComms : public Module
 {
     private:

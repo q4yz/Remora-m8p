@@ -8,8 +8,10 @@
     (e.g. BTT EBB42 toolhead boards) are nodes. Classic CAN, 8 byte frames,
     11-bit identifiers with the node number in the low bits, CANopen style:
 
-        0x080           SYNC            hub  -> all     once per servo period (phase 4)
+        0x080           SYNC            hub  -> all     reserved
         0x080 + node    EMCY            node -> hub     fault report (phase 5)
+        0x100 + node    JOINT           hub  -> node    step generator commands, every servo period
+        0x180 + node    JOINT FEEDBACK  node -> hub     step counts, answer to every JOINT
         0x200 + node    COMMAND         hub  -> node    process data (phase 3/4)
         0x280 + node    STATUS          node -> hub     process data (phase 3/4)
         0x580 + node    CONFIG REPLY    node -> hub     configuration transfer (phase 2)
@@ -26,13 +28,15 @@
 
 #include <stdint.h>
 
-#define CAN_PROTOCOL_VERSION    2           // 2: configuration transfer and digital I/O
+#define CAN_PROTOCOL_VERSION    3           // 2: configuration transfer and digital I/O, 3: joints
 
 #define CAN_NODE_MAX            15          // node numbers 1 ... 15
 
 // standard identifiers
 #define CAN_ID_SYNC             0x080
 #define CAN_ID_EMCY             0x080       // + node
+#define CAN_ID_JOINT            0x100       // + node
+#define CAN_ID_JOINT_FEEDBACK   0x180       // + node
 #define CAN_ID_COMMAND          0x200       // + node
 #define CAN_ID_STATUS           0x280       // + node
 #define CAN_ID_CONFIG_REPLY     0x580       // + node
@@ -74,14 +78,18 @@
 #define CFG_ERR_SEQUENCE        6           // frame out of order
 #define CFG_ERR_CHECKSUM        7           // END: count or checksum does not match
 #define CFG_ERR_BIT             8           // local data bit out of range or used twice
+#define CFG_ERR_JOINT           9           // local joint out of range or used twice
 
 #define CAN_MODULES_MAX         16          // modules per node
 #define CAN_CONFIG_REPLY_MS     50          // hub: resend a config frame without reply after this
 #define CAN_CONFIG_RETRIES      3           // then start over after CAN_CONFIG_RESTART_MS
 #define CAN_CONFIG_RESTART_MS   1000
 
-// module types
-#define MODULE_DIGITAL_PIN      0x01        // data: pin, flags (DPIN_*), local data bit
+// module types, a module record is type + 5 data bytes
+#define MODULE_DIGITAL_PIN      0x01        // data: pin, flags (DPIN_*), local data bit, 0, 0
+#define MODULE_STEPGEN          0x02        // data: step pin, 0, local joint, direction pin, enable pin
+
+#define CAN_PIN_NONE            0xFF        // e.g. a stepgen without enable pin
 
 // digital pin flags
 #define DPIN_OUTPUT             0x01
@@ -98,6 +106,43 @@
 #define CAN_PROCESS_MS          20          // COMMAND / STATUS sent on a change and at least this often
 #define CAN_COMMAND_TIMEOUT_MS  100         // node: no COMMAND for this long -> state SAFE
 #define CMD_FLAG_SAFE           0x01        // LinuxCNC gone: outputs to their safe state
+
+// joints (step generators on the node), JOINT hub -> node, JOINT FEEDBACK node -> hub:
+//   JOINT           byte 0 enable bits (node local joints), 1 sequence, then per joint
+//                   a 24-bit signed frequency command in Hz (steps / s), little endian
+//   JOINT FEEDBACK  byte 0 sequence of the JOINT answered, 1 enabled joints, then per
+//                   joint the low 24 bits of the step count; the hub extends them to 32
+//                   bits (a node moves far less than 2^23 steps between two frames)
+#define CAN_NODE_JOINTS         2           // joints per node, fits one 8 byte frame
+#define CAN_JOINT_REFRESH_MS    3           // hub: JOINT at least this often without LinuxCNC frames
+#define CAN_JOINT_TIMEOUT_MS    10          // node: no JOINT for this long -> stop, drivers disabled
+#define CAN_NODE_BASE_FREQ      40000       // node step generator thread, max step rate is half of it
+#define CAN_FREQ_MAX            8388607     // 24-bit frequency command
+
+static inline void canPutInt24(uint8_t* p, int32_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+}
+
+static inline uint32_t canGetUint24(const uint8_t* p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
+}
+
+static inline int32_t canGetInt24(const uint8_t* p)
+{
+    uint32_t v = canGetUint24(p);
+    return (v & 0x800000u) ? (int32_t)(v | 0xFF000000u) : (int32_t)v;
+}
+
+// difference of two 24-bit counts, -2^23 ... 2^23 - 1
+static inline int32_t canDelta24(uint32_t now, uint32_t before)
+{
+    uint32_t d = (now - before) & 0xFFFFFFu;
+    return (d & 0x800000u) ? (int32_t)(d | 0xFF000000u) : (int32_t)d;
+}
 
 #pragma pack(push, 1)
 
@@ -210,6 +255,7 @@ static inline const char* canConfigError(uint8_t status)
         case CFG_ERR_SEQUENCE:  return "sequence error";
         case CFG_ERR_CHECKSUM:  return "checksum error";
         case CFG_ERR_BIT:       return "data bit out of range or used twice";
+        case CFG_ERR_JOINT:     return "joint out of range or used twice";
     }
     return "?";
 }
