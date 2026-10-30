@@ -43,7 +43,8 @@ CanHub::CanHub(RemoraCAN* can) :
     usedOutputs(0),
     usedInputs(0),
     usedJoints(0),
-    usedVariables(0)
+    usedVariables(0),
+    usedSetPoints(0)
 {
     memset(this->nodes, 0, sizeof(this->nodes));
     memset(this->unknown, 0, sizeof(this->unknown));
@@ -469,6 +470,127 @@ void CanHub::writeVariables(volatile float* pv)
 }
 
 
+void CanHub::reserveSetPoints(uint8_t setPoints)
+{
+    this->usedSetPoints |= setPoints;
+}
+
+
+bool CanHub::addPwm(int node, const char* pinName, int sp, int pwmMax, int periodUs, int safeDuty)
+{
+    canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
+    uint8_t pin;
+    char name[6];
+
+    if (!n)
+    {
+        printf("CAN: module for node %d, which is not configured\n", node);
+        return false;
+    }
+    if (n->moduleCount >= CAN_MODULES_MAX)
+    {
+        printf("CAN: node %d: more than %d modules\n", node, CAN_MODULES_MAX);
+        return false;
+    }
+    if (n->pwmCount >= CAN_NODE_PWM)
+    {
+        printf("CAN: node %d: more than %d PWM outputs\n", node, CAN_NODE_PWM);
+        return false;
+    }
+    if (!canParsePin(pinName, &pin))
+    {
+        printf("CAN: node %d: PWM, invalid pin '%s'\n", node, pinName ? pinName : "");
+        return false;
+    }
+    if (this->pinUsed(n, pin))
+    {
+        printf("CAN: node %d: pin %s used twice\n", node, canPinName(pin, name));
+        return false;
+    }
+    if (sp < 0 || sp >= CAN_HUB_VARIABLES)
+    {
+        printf("CAN: node %d: PWM %s, SP[i] %d out of range 0 ... %d\n", node, canPinName(pin, name), sp,
+               CAN_HUB_VARIABLES - 1);
+        return false;
+    }
+    if (this->usedSetPoints & (1u << sp))
+    {
+        printf("CAN: node %d: PWM %s, SP[i] %d is already used\n", node, canPinName(pin, name), sp);
+        return false;
+    }
+    uint32_t period = (uint32_t)periodUs / (1000000u / CAN_NODE_BASE_FREQ);
+    if (periodUs <= 0 || period < CAN_PWM_MIN_PERIOD || period > 0xFFFF || pwmMax < 1 || pwmMax > 255 ||
+        safeDuty < 0 || safeDuty > 100)
+    {
+        printf("CAN: node %d: PWM %s: Period us %d ... %d, PWM Max 1 ... 255, Safe Duty 0 ... 100\n", node,
+               canPinName(pin, name), CAN_PWM_MIN_PERIOD * (1000000 / CAN_NODE_BASE_FREQ),
+               0xFFFF * (1000000 / CAN_NODE_BASE_FREQ));
+        return false;
+    }
+
+    uint8_t local = n->pwmCount++;
+    n->pwmSp[local] = (uint8_t)sp;
+    n->pwmMax[local] = (uint8_t)pwmMax;
+    this->usedSetPoints |= (uint8_t)(1u << sp);
+
+    uint8_t* m = n->modules[n->moduleCount++];
+    m[0] = MODULE_PWM;
+    m[1] = pin;
+    m[2] = (uint8_t)safeDuty;
+    m[3] = local;
+    m[4] = (uint8_t)period;
+    m[5] = (uint8_t)(period >> 8);
+
+    printf("CAN: node %d module %d: PWM %s, LinuxCNC SP[%d], %d Hz, PWM Max %d, safe duty %d %%\n", node,
+           n->moduleCount, canPinName(pin, name), sp, (int)(1000000 / periodUs), pwmMax, safeDuty);
+    return true;
+}
+
+
+void CanHub::sendPwm(canNodeEntry_t* n, const volatile float* setPoint, uint32_t now)
+{
+    uint16_t duty[CAN_NODE_PWM];
+    bool changed = !n->pwmSent;
+    for (int i = 0; i < n->pwmCount; i++)
+    {
+        // as the local PWM module: SP in %, limited to 0 ... 100 (a PID may go negative), scaled by PWM Max
+        float sp = setPoint[n->pwmSp[i]];
+        if (!(sp > 0.0f)) sp = 0.0f;
+        if (sp > 100.0f) sp = 100.0f;
+        duty[i] = (uint16_t)(sp * (CAN_PWM_FULL / 100) * n->pwmMax[i] / 255.0f + 0.5f);
+        if (duty[i] != n->pwmDuty[i]) changed = true;
+    }
+
+    // on a change, but not more often than CAN_PWM_MIN_MS (a PID changes it every servo period)
+    uint32_t since = now - n->lastPwm;
+    if (!(changed && since >= CAN_PWM_MIN_MS) && since < CAN_PWM_REFRESH_MS) return;
+
+    canFrame_t f;
+    f.id = CAN_ID_PWM + n->node;
+    f.extended = false;
+    f.len = (uint8_t)(2 * n->pwmCount);
+    for (int i = 0; i < n->pwmCount; i++)
+    {
+        f.data[2 * i] = (uint8_t)duty[i];
+        f.data[2 * i + 1] = (uint8_t)(duty[i] >> 8);
+    }
+    if (!this->can->send(f)) return;        // TX queue full: next loop pass
+    for (int i = 0; i < n->pwmCount; i++) n->pwmDuty[i] = duty[i];
+    n->lastPwm = now;
+    n->pwmSent = true;
+}
+
+
+void CanHub::servicePwm(uint32_t now, const volatile float* setPoint)
+{
+    for (int i = 0; i < this->nodeCount; i++)
+    {
+        canNodeEntry_t* n = &this->nodes[i];
+        if (n->pwmCount && n->alive && n->cfgState == CFG_STATE_DONE) this->sendPwm(n, setPoint, now);
+    }
+}
+
+
 uint8_t CanHub::getTmcStatus(int node, int driver)
 {
     canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
@@ -708,6 +830,7 @@ void CanHub::handleConfigReply(const canFrame_t& frame, uint32_t now)
         // the node configures its TMC drivers now, it reports them
         for (int i = 0; i < n->moduleCount; i++) n->tmcStatus[i] = TMC_STATUS_NONE;
         n->analogValid = false;             // temperatures from the next ANALOG frame
+        n->pwmSent = false;                 // the duties right away
         return;
     }
 

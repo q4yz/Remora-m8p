@@ -29,9 +29,12 @@ CanNode::CanNode(RemoraCAN* can, uint32_t baseFreq) :
     analogCount(0),
     analogSamples(0),
     lastAnalogSample(0),
-    lastAnalog(0)
+    lastAnalog(0),
+    pwmCount(0),
+    pwmFrames(0)
 {
     memset(this->joints, 0, sizeof(this->joints));
+    memset(this->pwm, 0, sizeof(this->pwm));
     // as the Remora stepgen: no floating point in the interrupt (the Cortex-M0+ has no FPU)
     this->frequencyScale = ((int64_t)1 << (NODE_STEPBIT + 32)) / baseFreq;
 
@@ -189,6 +192,11 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
         if (m.bit >= CAN_NODE_ANALOG) return CFG_ERR_VALUE;
         if (canIoPinExists(m.pin) && !canIoPinReserved(m.pin) && !canIoAnalogCapable(m.pin)) return CFG_ERR_NOT_ANALOG;
     }
+    else if (m.type == MODULE_PWM)
+    {
+        uint16_t period = (uint16_t)(m.dirPin | (m.enablePin << 8));
+        if (m.bit >= CAN_NODE_PWM || m.flags > 100 || period < CAN_PWM_MIN_PERIOD) return CFG_ERR_VALUE;
+    }
     else return CFG_ERR_TYPE;
 
     uint8_t pins[3], used[3];
@@ -211,7 +219,7 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
         }
         if (p.type != m.type || p.bit != m.bit || m.type == MODULE_TMC2209) continue;
         if (m.type == MODULE_STEPGEN) return CFG_ERR_JOINT;
-        if (m.type == MODULE_ANALOG_IN) return CFG_ERR_VALUE;
+        if (m.type == MODULE_ANALOG_IN || m.type == MODULE_PWM) return CFG_ERR_VALUE;
         if ((p.flags & DPIN_OUTPUT) == (m.flags & DPIN_OUTPUT)) return CFG_ERR_BIT;
     }
     return CFG_OK;
@@ -287,6 +295,11 @@ void CanNode::handleConfig(const canFrame_t& frame)
             {
                 printf("CONFIG: module %d: analog input %d, %s\n", c.index + 1, m.bit, canPinName(m.pin, name));
             }
+            else if (m.type == MODULE_PWM)
+            {
+                printf("CONFIG: module %d: PWM %d, %s, period %d ticks, safe duty %d %%\n", c.index + 1, m.bit,
+                       canPinName(m.pin, name), m.dirPin | (m.enablePin << 8), m.flags);
+            }
             else if (m.type == MODULE_TMC2209)
             {
                 printf("CONFIG: module %d: TMC2209 UART %s, address %d, %d mA, %d microsteps, %s, stall %d\n",
@@ -342,9 +355,25 @@ void CanNode::applyConfig()
     this->outputs = 0;
     this->jointCount = 0;
     this->analogCount = 0;
+    this->pwmCount = 0;
     for (int i = 0; i < this->moduleCount; i++)
     {
         const canNodeModule_t& m = this->modules[i];
+        if (m.type == MODULE_PWM)
+        {
+            canNodePwm_t& p = this->pwm[m.bit];
+            p.pin = m.pin;
+            p.period = (uint16_t)(m.dirPin | (m.enablePin << 8));
+            p.safeDuty = m.flags;
+            p.duty = 0;
+            p.counter = 0;
+            p.high = false;
+            p.onTicks = 0;
+            canIoConfigure(m.pin, true, DPIN_MOD_NONE, false);
+            p.active = true;                    // last: the interrupt starts using it now
+            if (m.bit + 1 > this->pwmCount) this->pwmCount = (uint8_t)(m.bit + 1);
+            continue;
+        }
         if (m.type == MODULE_ANALOG_IN)
         {
             canIoAnalogConfigure(m.pin);
@@ -396,6 +425,8 @@ void CanNode::applyConfig()
     this->jointsStopped = false;
     this->commandCount = 0;
     this->jointFrames = 0;
+    this->pwmFrames = 0;
+    this->writePwm();                           // safe duty until LinuxCNC is there
     memset(this->analogSum, 0, sizeof(this->analogSum));
     this->analogSamples = 0;
     this->lastAnalogSample = this->now;
@@ -415,6 +446,13 @@ void CanNode::releaseModules()
     for (int i = 0; i < this->tmcCount; i++) this->tmc[i].stop();
     this->tmcCount = 0;
     this->analogCount = 0;
+    for (int i = 0; i < CAN_NODE_PWM; i++)
+    {
+        bool was = this->pwm[i].active;
+        this->pwm[i].active = false;            // first: the interrupt leaves the pin alone
+        if (was) canIoWrite(this->pwm[i].pin, false);
+    }
+    this->pwmCount = 0;
 
     uint8_t pins[3];
     for (int i = 0; i < this->moduleCount; i++)
@@ -430,8 +468,37 @@ void CanNode::releaseModules()
     Process data (phase 3)
 ************************************************************************/
 
+// duties to high ticks: the commanded one, or the safe duty while the hub or LinuxCNC is gone
+void CanNode::writePwm()
+{
+    for (int i = 0; i < this->pwmCount; i++)
+    {
+        canNodePwm_t& p = this->pwm[i];
+        if (!p.active) continue;
+        uint32_t duty = this->safe ? (uint32_t)p.safeDuty * (CAN_PWM_FULL / 100) : p.duty;
+        p.onTicks = (uint16_t)((duty * p.period + CAN_PWM_FULL / 2) / CAN_PWM_FULL);
+    }
+}
+
+
+void CanNode::handlePwm(const canFrame_t& frame)
+{
+    if (!this->pwmCount || frame.len < 2 * this->pwmCount) return;
+    if (this->state != NODE_STATE_RUNNING && this->state != NODE_STATE_SAFE) return;
+
+    for (int i = 0; i < this->pwmCount; i++)
+    {
+        uint16_t duty = (uint16_t)(frame.data[2 * i] | (frame.data[2 * i + 1] << 8));
+        this->pwm[i].duty = duty > CAN_PWM_FULL ? CAN_PWM_FULL : duty;
+    }
+    this->pwmFrames++;
+    this->writePwm();
+}
+
+
 void CanNode::writeOutputs()
 {
+    this->writePwm();
     for (int i = 0; i < this->moduleCount; i++)
     {
         const canNodeModule_t& m = this->modules[i];
@@ -643,6 +710,20 @@ void CanNode::baseTick()
 {
     for (int i = 0; i < this->tmcCount; i++) this->tmc[i].tick();
 
+    // PWM: high from the period start for onTicks, written on the edges only
+    for (int i = 0; i < CAN_NODE_PWM; i++)
+    {
+        canNodePwm_t& p = this->pwm[i];
+        if (!p.active) continue;
+        if (++p.counter >= p.period) p.counter = 0;
+        bool high = p.counter < p.onTicks;
+        if (high != p.high)
+        {
+            canIoWrite(p.pin, high);
+            p.high = high;
+        }
+    }
+
     for (int i = 0; i < CAN_NODE_JOINTS; i++)
     {
         canNodeJoint_t& j = this->joints[i];
@@ -704,6 +785,7 @@ void CanNode::service(uint32_t now)
         else if (this->node && f.id == (uint32_t)(CAN_ID_CONFIG + this->node)) this->handleConfig(f);
         else if (this->node && f.id == (uint32_t)(CAN_ID_COMMAND + this->node)) this->handleCommand(f);
         else if (this->node && f.id == (uint32_t)(CAN_ID_JOINT + this->node)) this->handleJoint(f);
+        else if (this->node && f.id == (uint32_t)(CAN_ID_PWM + this->node)) this->handlePwm(f);
     }
 
     if (this->state == NODE_STATE_RUNNING || this->state == NODE_STATE_SAFE)

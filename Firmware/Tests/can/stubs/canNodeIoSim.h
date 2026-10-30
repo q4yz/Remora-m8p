@@ -12,6 +12,7 @@ struct SimIo
     bool latch[96] = {};          /* output register: the level written, kept while the pin is an input */
     uint16_t analog[96] = {};     /* ADC reading applied from outside, 0 ... 65535 */
     bool analogOn[96] = {};
+    int highTicks[96] = {};       /* base ticks the pin was high, e.g. PWM duty */
     int configures = 0;
 };
 

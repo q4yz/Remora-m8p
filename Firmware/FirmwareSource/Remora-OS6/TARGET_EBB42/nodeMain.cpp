@@ -3,8 +3,8 @@
 
     Takes its node number and its modules (digital pins, step generators,
     TMC2209 drivers, thermistors) from the hub and exchanges the process data
-    with it (CAN_PROTOCOL.md, CanNode). The heater and the fans are digital
-    outputs so far. The step pulses are
+    with it (CAN_PROTOCOL.md, CanNode). Heater and fans as digital or PWM
+    outputs. The step pulses and the PWM are
     made in a TIM6 interrupt at CAN_NODE_BASE_FREQ (CanNode::baseTick).
 
     EBB42: CAN on PB0 (RX) / PB1 (TX) = FDCAN2, 8 MHz crystal, no bootloader,
@@ -108,6 +108,12 @@ int main()
                 printf("node: joint %d %s, position %ld steps, %lu JOINT frame(s)\n", j,
                        node.getJointEnabled(j) ? "enabled" : "disabled", (long)node.getJointPosition(j),
                        (unsigned long)node.getJointFrames());
+            }
+            for (int p = 0; p < node.getPwmCount(); p++)
+            {
+                char name[6];
+                printf("node: PWM %d %s, %u of %u ticks high, %lu PWM frame(s)\n", p, canPinName(node.getPwmPin(p), name),
+                       node.getPwmOnTicks(p), node.getPwmPeriod(p), (unsigned long)node.getPwmFrames());
             }
             for (int a = 0; a < node.getAnalogCount(); a++)
             {

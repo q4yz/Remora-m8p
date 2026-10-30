@@ -354,13 +354,19 @@ void configCan()
 
     // data bits of the hub's own Digital Pin modules and joints of its Stepgen modules, the nodes must not use them
     uint16_t localOutputs = 0, localInputs = 0;
-    uint8_t localJoints = 0, localVariables = 0;
+    uint8_t localJoints = 0, localVariables = 0, localSetPoints = 0;
     JsonArray local = doc["Modules"];
     for (JsonArray::iterator it = local.begin(); it != local.end(); ++it)
     {
         JsonObject m = *it;
         int pv = m["PV[i]"] | -1;
         if (pv >= 0 && pv < VARIABLES) localVariables |= (uint8_t)(1u << pv);
+        int sp = m["SP[i]"] | -1, periodSp = m["Period SP[i]"] | -1;
+        if (sp >= 0 && sp < VARIABLES) localSetPoints |= (uint8_t)(1u << sp);
+        if (periodSp >= 0 && periodSp < VARIABLES && !strcmp(m["Variable Freq"] | "", "True"))
+        {
+            localSetPoints |= (uint8_t)(1u << periodSp);
+        }
         if (!strcmp(m["Type"] | "", "Stepgen"))
         {
             int joint = m["Joint Number"] | -1;
@@ -376,6 +382,7 @@ void configCan()
     canHub->reserveBits(localOutputs, localInputs);
     canHub->reserveJoints(localJoints);
     canHub->reserveVariables(localVariables);
+    canHub->reserveSetPoints(localSetPoints);
 
     // LinuxCNC input bit: 1 while all mandatory nodes run, goes into the E-stop chain in HAL
     if (cfg.containsKey("Status Bit")) canHub->setStatusBit(cfg["Status Bit"] | -1);
@@ -419,6 +426,18 @@ void configCan()
                 JsonObject t = m["Thermistor"];
                 canHub->addThermistor(number, t["Pin"] | "", m["PV[i]"] | -1, t["beta"] | 0.0f, t["r0"] | 0.0f,
                                       t["t0"] | 25.0f, t["Pullup"] | 4700.0f);
+            }
+            else if (!strcmp(type, "Temperature"))
+            {
+                printf("CAN: node %d: Temperature \"Sensor\" '%s' is not supported on nodes, only \"Thermistor\"\n",
+                       number, m["Sensor"] | "");
+            }
+            else if (!strcmp(type, "PWM"))
+            {
+                // software PWM on the node; "Hardware PWM" / "Variable Freq" are not supported there
+                int pwmMax = m["PWM Max"] | 0;
+                canHub->addPwm(number, m["PWM Pin"] | "", m["SP[i]"] | -1, pwmMax ? pwmMax : 255,
+                               m["Period us"] | 10000, (int)(m["Safe Duty"] | 0.0f));
             }
             else if (!strcmp(type, "TMC2209"))
             {
@@ -880,8 +899,12 @@ int main()
         canHub->serviceJoints(HAL_GetTick(), fresh, commsLost, rxData.jointFreqCmd, rxData.jointEnable,
                               txData.jointFeedback);
     }
-    // node temperatures into the process variables
-    if (canHub) canHub->writeVariables(txData.processVariable);
+    // node temperatures into the process variables, set points to the node PWM outputs
+    if (canHub)
+    {
+        canHub->writeVariables(txData.processVariable);
+        canHub->servicePwm(HAL_GetTick(), rxData.setPoint);
+    }
 #endif
 
     //ThisThread::sleep_for(LOOP_TIME);

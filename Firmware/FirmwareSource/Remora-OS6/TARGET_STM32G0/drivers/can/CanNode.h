@@ -21,6 +21,8 @@
     TMC2209  drivers configured over their UART (NodeTmc2209, bit-banged in
              baseTick), status to the hub in EMCY
     analog   ADC inputs (thermistors), averaged, raw to the hub in ANALOG
+    PWM      software PWM outputs in baseTick (fans, heaters), duties from PWM,
+             the safe duty while the hub or LinuxCNC is gone
 ************************************************************************/
 
 #define NODE_STEPBIT            22          // DDS accumulator bit that makes a step, as the Remora stepgen
@@ -30,11 +32,25 @@ typedef struct
 {
     uint8_t  type;              // MODULE_*
     uint8_t  pin;               // CAN_PIN; stepgen: step pin; TMC2209: UART pin
-    uint8_t  flags;             // DPIN_*; TMC2209: TMC_*
-    uint8_t  bit;               // local data bit; stepgen: local joint; TMC2209: current / 10 mA; analog: local index
-    uint8_t  dirPin;            // stepgen: direction pin; TMC2209: Rsense mOhm
-    uint8_t  enablePin;         // stepgen: enable pin (active low), CAN_PIN_NONE: none; TMC2209: stall threshold
+    uint8_t  flags;             // DPIN_*; TMC2209: TMC_*; PWM: safe duty %
+    uint8_t  bit;               // local data bit; stepgen: local joint; TMC2209: current / 10 mA; analog, PWM: local index
+    uint8_t  dirPin;            // stepgen: direction pin; TMC2209: Rsense mOhm; PWM: period low byte
+    uint8_t  enablePin;         // stepgen: enable pin (active low), CAN_PIN_NONE: none; TMC2209: stall threshold;
+                                // PWM: period high byte
 } canNodeModule_t;
+
+// a software PWM output, shared with the base thread interrupt like a joint
+typedef struct
+{
+    volatile bool     active;
+    uint8_t           pin;
+    uint16_t          period;           // base ticks
+    volatile uint16_t onTicks;          // high ticks per period (main loop)
+    uint16_t          counter;          // interrupt
+    bool              high;             // interrupt
+    uint8_t           safeDuty;         // % while the hub / LinuxCNC is gone
+    uint16_t          duty;             // last commanded, 0 ... CAN_PWM_FULL
+} canNodePwm_t;
 
 // a step generator, the base thread interrupt (baseTick) and the main loop share it
 typedef struct
@@ -103,6 +119,11 @@ class CanNode
         uint32_t    lastAnalogSample;
         uint32_t    lastAnalog;
 
+        // PWM outputs, local index i
+        canNodePwm_t pwm[CAN_NODE_PWM];
+        uint8_t     pwmCount;       // local outputs 0 ... pwmCount - 1 in PWM
+        uint32_t    pwmFrames;      // PWM frames since the configuration (debug)
+
         bool sendLssReply(void);
         void sendHeartbeat(void);
         void sendConfigReply(uint8_t cmd, uint8_t index, uint8_t status, uint8_t detail);
@@ -115,6 +136,8 @@ class CanNode
         bool sendTmcStatus(int i);
         void serviceTmc(void);
         void serviceAnalog(void);
+        void handlePwm(const canFrame_t& frame);
+        void writePwm(void);
         void setJointEnable(canNodeJoint_t& j, bool enabled);
         void stopJoints(void);
         uint8_t checkModule(const canFrame_t& frame, canNodeModule_t& m);
@@ -147,6 +170,11 @@ class CanNode
         uint8_t getAnalogCount(void) { return this->analogCount; }
         uint8_t getAnalogPin(int i) { return this->analogPin[i]; }
         uint16_t getAnalogValue(int i) { return this->analogValue[i]; }
+        uint8_t getPwmCount(void) { return this->pwmCount; }
+        uint8_t getPwmPin(int i) { return this->pwm[i].pin; }
+        uint16_t getPwmOnTicks(int i) { return this->pwm[i].onTicks; }
+        uint16_t getPwmPeriod(int i) { return this->pwm[i].period; }
+        uint32_t getPwmFrames(void) { return this->pwmFrames; }
 };
 
 #endif

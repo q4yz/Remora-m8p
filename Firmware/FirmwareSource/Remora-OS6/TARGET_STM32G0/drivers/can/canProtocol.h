@@ -14,6 +14,7 @@
         0x180 + node    JOINT FEEDBACK  node -> hub     step counts, answer to every JOINT
         0x200 + node    COMMAND         hub  -> node    process data (phase 3/4)
         0x280 + node    STATUS          node -> hub     process data (phase 3/4)
+        0x300 + node    PWM             hub  -> node    PWM duties (fans, heaters)
         0x380 + node    ANALOG          node -> hub     ADC readings (thermistors), every 100 ms
         0x580 + node    CONFIG REPLY    node -> hub     configuration transfer (phase 2)
         0x600 + node    CONFIG          hub  -> node    configuration transfer (phase 2)
@@ -29,7 +30,7 @@
 
 #include <stdint.h>
 
-#define CAN_PROTOCOL_VERSION    5           // 2: configuration and digital I/O, 3: joints, 4: TMC2209, 5: analog
+#define CAN_PROTOCOL_VERSION    6           // 2: config and digital I/O, 3: joints, 4: TMC2209, 5: analog, 6: PWM
 
 #define CAN_NODE_MAX            15          // node numbers 1 ... 15
 
@@ -40,6 +41,7 @@
 #define CAN_ID_JOINT_FEEDBACK   0x180       // + node
 #define CAN_ID_COMMAND          0x200       // + node
 #define CAN_ID_STATUS           0x280       // + node
+#define CAN_ID_PWM              0x300       // + node
 #define CAN_ID_ANALOG           0x380       // + node
 #define CAN_ID_CONFIG_REPLY     0x580       // + node
 #define CAN_ID_CONFIG           0x600       // + node
@@ -94,6 +96,17 @@
 #define MODULE_STEPGEN          0x02        // data: step pin, 0, local joint, direction pin, enable pin
 #define MODULE_TMC2209          0x03        // data: UART pin, TMC_* flags, current / 10 mA, Rsense mOhm, stall threshold
 #define MODULE_ANALOG_IN        0x04        // data: ADC pin, 0, local analog index, 0, 0
+#define MODULE_PWM              0x05        // data: pin, safe duty %, local PWM index, period in base ticks (16 bit)
+
+// PWM outputs: software PWM in the node base thread, one period = period base ticks
+// (CAN_NODE_BASE_FREQ). PWM frame hub -> node: per local output i a 16-bit duty,
+// 0 ... CAN_PWM_FULL, little endian; on a change at most every CAN_PWM_MIN_MS, and every
+// CAN_PWM_REFRESH_MS. Without the hub / LinuxCNC (COMMAND) the outputs run the safe duty.
+#define CAN_NODE_PWM            4           // PWM outputs per node, fits one 8 byte frame
+#define CAN_PWM_FULL            10000       // duty 100.00 %
+#define CAN_PWM_MIN_PERIOD      40          // base ticks, 1 ms: 2.5 % resolution
+#define CAN_PWM_MIN_MS          10
+#define CAN_PWM_REFRESH_MS      100
 
 // analog inputs: the node averages its ADC readings and sends them raw in ANALOG, byte 2i / 2i + 1
 // local input i, 0 ... 65535, little endian; the hub turns them into temperatures (thermistor)

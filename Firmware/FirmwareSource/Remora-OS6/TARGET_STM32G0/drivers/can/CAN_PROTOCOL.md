@@ -20,6 +20,7 @@ could disturb the base thread).
 | `0x180 + n` | JOINT FEEDBACK (step counts) | node → hub | joints |
 | `0x200 + n` | COMMAND (process data) | hub → node | 3/4 |
 | `0x280 + n` | STATUS (process data) | node → hub | 3/4 |
+| `0x300 + n` | PWM (duties) | hub → node | PWM |
 | `0x380 + n` | ANALOG (ADC readings) | node → hub | temperature |
 | `0x580 + n` | CONFIG REPLY | node → hub | 2 |
 | `0x600 + n` | CONFIG | hub → node | 2 |
@@ -111,6 +112,8 @@ Module types (pins as `port << 4 | number`, port 0 = A, `0xFF` none):
   StealthChop, bits 4-7 microsteps as power of 2), current / 10 mA, Rsense
   mOhm, stall threshold (SGTHRS). Up to 2 per node, one per UART pin.
 - `0x04` analog input, data: ADC pin, 0, node local analog index (0 ... 3).
+- `0x05` PWM output, data: pin, safe duty (%), node local PWM index (0 ... 3),
+  period in base ticks (16-bit little endian, 25 µs each, at least 40 = 1 ms).
 
 ## Process data (phase 3)
 
@@ -246,9 +249,39 @@ The heater is a `"Digital Pin"` output on the node (e.g. PB13 on the EBB42),
 driven from HAL; it goes off when the node loses the hub or LinuxCNC (safe
 state low).
 
+## PWM outputs (fans, heaters)
+
+A `"PWM"` module in a node entry, same keys as the local software PWM:
+
+```json
+{ "Type": "PWM", "Comment": "part fan", "SP[i]": 1, "PWM Pin": "PA_0",
+  "PWM Max": 0, "Period us": 10000, "Safe Duty": 0 }
+```
+
+`"SP[i]"` the LinuxCNC set point in % (`remora.SP.1`, limited to 0 ... 100,
+a negative PID output is 0), `"PWM Max"` 1 ... 255 scales it as on the hub
+(0 or left out: 255, the full range, e.g. 128 for a 12 V fan on 24 V),
+`"Period us"` 1000 ... 1638375 (default 10000 = 100 Hz), `"Safe Duty"` % while
+the hub or LinuxCNC is gone (e.g. 100 for the hotend fan, 0 for a heater).
+`"Hardware PWM"` / `"Variable Freq"` are not supported on nodes. The SP must not
+be used by a module of the hub (any `"SP[i]"`, `"Period SP[i]"`) or another
+node; up to 4 per node.
+
+- The node makes the PWM in its base thread (40 kHz): resolution one base
+  tick, 0.25 % at 100 Hz, 2.5 % at 1 kHz. Not for 4-pin fans (25 kHz).
+- PWM `0x300 + n`, hub → node: per local output 2 bytes, duty 0 ... 10000
+  (0.01 %), little endian. On a change, at most every 10 ms (a PID changes
+  the SP every servo period), and every 100 ms.
+- The node runs the safe duty after the configuration until LinuxCNC is
+  there, while LinuxCNC is gone (COMMAND safe flag) and in state SAFE (no
+  COMMAND from the hub for 100 ms).
+
+A heater on PWM: PID output to the SP, `"Safe Duty": 0`, and a period of
+about 100 ms (`"Period us": 100000`) for the MOSFET.
+
 ## Next phases
 
-3. **Remote modules**: PWM outputs (heater, fans) via SP indices; the hotend
-   fan rule runs locally on the node.
+3. **Remote modules**: the hotend fan rule (on above a temperature) runs
+   locally on the node.
 5. **Safety**: node faults (e.g. TMC2209 not answering) and status bits to
    LinuxCNC in the 2 spare bytes of the SPI frame.

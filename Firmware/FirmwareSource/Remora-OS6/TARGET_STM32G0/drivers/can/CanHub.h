@@ -18,6 +18,8 @@
              come back in JOINT FEEDBACK and go into the joint feedback
     TMC2209  "TMC2209" modules on nodes: the node configures the driver over
              its UART, the hub prints the status the node reports (EMCY)
+    PWM      "PWM" modules on nodes: the LinuxCNC set point (%) as duty to the
+             node (PWM frame), software PWM there, the safe duty without LinuxCNC
     temp     "Temperature" (thermistor) modules on nodes: the node sends its
              ADC readings (ANALOG), the hub turns them into the temperature,
              same Beta formula as the local module, into the process variable
@@ -101,6 +103,14 @@ typedef struct
     uint16_t analogRaw[CAN_NODE_ANALOG];
     float    temperature[CAN_NODE_ANALOG];  // from the last ANALOG frame
     bool     analogValid;       // an ANALOG frame since the configuration
+
+    // PWM outputs: node local output i runs LinuxCNC set point pwmSp[i] (%)
+    uint8_t  pwmSp[CAN_NODE_PWM];
+    uint8_t  pwmMax[CAN_NODE_PWM];          // "PWM Max": 100 % SP gives pwmMax / 255 duty
+    uint8_t  pwmCount;
+    uint16_t pwmDuty[CAN_NODE_PWM];         // in the last PWM frame
+    uint32_t lastPwm;           // ms
+    bool     pwmSent;           // since the configuration
 } canNodeEntry_t;
 
 #define CAN_HUB_VARIABLES       6           // LinuxCNC process variables (VARIABLES in configuration.h)
@@ -154,6 +164,7 @@ class CanHub
         uint16_t        usedInputs;
         uint8_t         usedJoints;         // LinuxCNC joints already taken (local stepgens and nodes)
         uint8_t         usedVariables;      // LinuxCNC process variables already taken
+        uint8_t         usedSetPoints;      // LinuxCNC set points already taken
 
         canNodeEntry_t* findNode(uint8_t node);
         bool pinUsed(const canNodeEntry_t* n, uint8_t pin);
@@ -164,6 +175,7 @@ class CanHub
         void handleJointFeedback(const canFrame_t& frame);
         void handleEmcy(const canFrame_t& frame);
         void handleAnalog(const canFrame_t& frame);
+        void sendPwm(canNodeEntry_t* n, const volatile float* setPoint, uint32_t now);
         void printTmc(const canNodeEntry_t* n, int module);
         bool sendJoint(canNodeEntry_t* n, const volatile int32_t* freq, uint8_t enable, bool safe);
         void sendConfigStep(canNodeEntry_t* n, uint32_t now);
@@ -216,6 +228,16 @@ class CanHub
         // writes the node temperatures into txData.processVariable, main loop; CAN_TEMP_ERROR
         // while a node is lost or not configured, or its sensor is open / shorted
         void writeVariables(volatile float* processVariable);
+
+        // LinuxCNC set points of the hub's own modules ("SP[i]", "Period SP[i]"), call before addPwm
+        void reserveSetPoints(uint8_t setPoints);
+
+        // a "PWM" module of a node: sp the LinuxCNC set point (%), pwmMax 1 ... 255 (255: full range),
+        // periodUs the PWM period, safeDuty % while the hub or LinuxCNC is gone
+        bool addPwm(int node, const char* pin, int sp, int pwmMax, int periodUs, int safeDuty);
+
+        // PWM duties to the nodes, main loop: setPoint rxData.setPoint
+        void servicePwm(uint32_t now, const volatile float* setPoint);
 
         // outputs: rxData.outputs; safe: LinuxCNC gone, node outputs to their safe state
         void service(uint32_t now, bool quiet, bool safe = true, uint16_t outputs = 0);

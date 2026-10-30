@@ -82,6 +82,7 @@ static int32_t simFreq[8];                 /* rxData.jointFreqCmd */
 static uint8_t simEnable = 0;              /* rxData.jointEnable */
 static int32_t simFeedback[8];             /* txData.jointFeedback */
 static float simPv[6];                     /* txData.processVariable */
+static float simSp[6];                     /* rxData.setPoint */
 
 /* one LinuxCNC WRITE per ms, the node base thread at CAN_NODE_BASE_FREQ */
 static void run(CanHub& hub, std::vector<Node*> nodes, uint32_t& now, uint32_t ms, bool quiet = false) {
@@ -90,6 +91,7 @@ static void run(CanHub& hub, std::vector<Node*> nodes, uint32_t& now, uint32_t m
             hub.service(now, quiet, simSafe, simOutputs);
             hub.serviceJoints(now, !simSafe, simSafe, simFreq, simEnable, simFeedback);
             hub.writeVariables(simPv);
+            hub.servicePwm(now, simSp);
         }
         for (Node* n : nodes) {
             simIo = &n->io;
@@ -97,6 +99,7 @@ static void run(CanHub& hub, std::vector<Node*> nodes, uint32_t& now, uint32_t m
             for (int k = 0; k < CAN_NODE_BASE_FREQ / 1000; k++) {
                 n->node->baseTick();
                 if (n->tmc) n->tmc->tick(n->io);
+                for (int p = 0; p < 96; p++) if (n->io.level[p] && n->io.output[p]) n->io.highTicks[p]++;
             }
         }
     }
@@ -594,6 +597,71 @@ int main(int argc, char** argv) {
         run(hub2, {&a}, now, 3000);
         CHECK(a.node->getState() == NODE_STATE_PREOP && hub2.runningMask() == 0);
         CHECK(simPv[2] == CAN_TEMP_ERROR);
+    }
+    else if (sc == "pwm" || sc == "pwm-lost") {
+        /* EBB42: part fan PA_0 on SP[1], 100 Hz, safe 0 %; hotend fan PA_1 on SP[2], PWM Max 128, safe 100 % */
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        const uint8_t PA0 = CAN_PIN(0, 0), PA1 = CAN_PIN(0, 1);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addPwm(1, "PA_0", 1, 255, 10000, 0));
+        CHECK(hub.addPwm(1, "PA_1", 2, 128, 10000, 100));
+        run(hub, {&a}, now, 1500);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getPwmCount() == 2 && a.node->getPwmPeriod(0) == 400);
+        /* duty over the next 100 ms (10 periods), in % */
+        auto duty = [&](uint8_t pin) { memset(a.io.highTicks, 0, sizeof(a.io.highTicks)); run(hub, {&a}, now, 100); return a.io.highTicks[pin] / 40.0; };
+        double d0 = duty(PA0), d1 = a.io.highTicks[PA1] / 40.0;
+        printf("  LinuxCNC not connected: %.1f %% / %.1f %%\n", d0, d1);
+        CHECK(d0 == 0.0 && d1 > 99.0);                                                   /* safe duties */
+        simSafe = false; simSp[1] = 50.0f; simSp[2] = 100.0f;
+        run(hub, {&a}, now, 30);
+        d0 = duty(PA0); d1 = a.io.highTicks[PA1] / 40.0;
+        printf("  SP 50 %% / 100 %% (PWM Max 128): %.1f %% / %.1f %%\n", d0, d1);
+        CHECK(d0 > 49.5 && d0 < 50.5 && d1 > 49.7 && d1 < 50.7);
+        CHECK(a.node->getPwmOnTicks(0) == 200 && a.node->getPwmOnTicks(1) == 201);
+        simSp[1] = -20.0f; run(hub, {&a}, now, 30);                                       /* a PID goes negative */
+        CHECK(a.node->getPwmOnTicks(0) == 0);
+        simSp[1] = 150.0f; run(hub, {&a}, now, 30);
+        CHECK(a.node->getPwmOnTicks(0) == 400 && duty(PA0) == 100.0);
+        uint32_t frames = a.node->getPwmFrames();
+        for (int i = 0; i < 100; i++) { simSp[1] = (float)(i % 100); run(hub, {&a}, now, 1); }     /* every servo period */
+        printf("  SP changing every ms for 100 ms: %u PWM frames\n", a.node->getPwmFrames() - frames);
+        CHECK(a.node->getPwmFrames() - frames <= 11);
+        simSp[1] = 30.0f; run(hub, {&a}, now, 30);
+        CHECK(a.node->getPwmOnTicks(0) == 120);
+        if (sc == "pwm") {
+            simSafe = true; run(hub, {&a}, now, 30);                                      /* LinuxCNC gone */
+            CHECK(a.node->getPwmOnTicks(0) == 0 && a.node->getPwmOnTicks(1) == 400);
+            simSafe = false; run(hub, {&a}, now, 30);
+            CHECK(a.node->getPwmOnTicks(0) == 120);
+        } else {
+            hubRuns = false; run(hub, {&a}, now, 150);                                    /* hub gone */
+            CHECK(a.node->getState() == NODE_STATE_SAFE);
+            CHECK(a.node->getPwmOnTicks(0) == 0 && a.node->getPwmOnTicks(1) == 400);
+            CHECK(duty(PA0) == 0.0 && a.io.highTicks[PA1] == 4000);
+            hubRuns = true; run(hub, {&a}, now, 150);
+            CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getPwmOnTicks(0) == 120);
+        }
+        simSafe = true;
+    }
+    else if (sc == "pwm-config") {
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode("0e0d81e4210c", 1, "");
+        hub.reserveSetPoints(1u << 0);                                                    /* the hub's own PWM */
+        CHECK(!hub.addPwm(1, "PA_0", 0, 255, 10000, 0));                                  /* SP taken */
+        CHECK(!hub.addPwm(1, "PA_0", 6, 255, 10000, 0));                                  /* out of range */
+        CHECK(!hub.addPwm(1, "PA_0", 1, 255, 500, 0));                                    /* period < 1 ms */
+        CHECK(!hub.addPwm(1, "PA_0", 1, 255, 2000000, 0));                                /* > 16 bit ticks */
+        CHECK(!hub.addPwm(1, "PA_0", 1, 0, 10000, 0));                                    /* PWM Max */
+        CHECK(!hub.addPwm(1, "PA_0", 1, 255, 10000, 101));                                /* safe duty */
+        CHECK(!hub.addPwm(1, "XA_0", 1, 255, 10000, 0));
+        CHECK(hub.addPwm(1, "PA_0", 1, 255, 10000, 0));
+        CHECK(!hub.addPwm(1, "PA_1", 1, 255, 10000, 0));                                  /* SP used twice */
+        CHECK(!hub.addPwm(1, "PA_0", 2, 255, 10000, 0));                                  /* pin used twice */
+        CHECK(!hub.addDigitalPin(1, "PA_0", true, false, 0, false, false, 1));
+        CHECK(hub.addPwm(1, "PA_1", 2, 255, 1000, 0) && hub.addPwm(1, "PA_2", 3, 255, 1000, 0) &&
+              hub.addPwm(1, "PA_3", 4, 255, 1000, 0));
+        CHECK(!hub.addPwm(1, "PA_4", 5, 255, 1000, 0));                                   /* 4 per node */
     }
     else if (sc == "tmc-config") {
         RemoraCAN hc; CanHub hub(&hc);

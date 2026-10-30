@@ -3,11 +3,11 @@
 Expansion board for the Manta M8P hub, see
 `FirmwareSource/Remora-OS6/TARGET_STM32G0/drivers/can/CAN_PROTOCOL.md`.
 
-**State: phase 2 + joints + TMC2209 + temperature.** The node joins the bus,
-gets its node number and its modules from the hub. Supported on the node so
-far: Digital Pin (inputs and outputs, e.g. the heater), Stepgen (a LinuxCNC
-joint, e.g. the extruder motor), TMC2209 (its driver over the UART) and
-Temperature (thermistor). PWM outputs (fans) follow in the next phases.
+**State: phase 2 + joints + TMC2209 + temperature + PWM.** The node joins
+the bus, gets its node number and its modules from the hub. Supported on the
+node: Digital Pin (inputs and outputs), Stepgen (a LinuxCNC joint, e.g. the
+extruder motor), TMC2209 (its driver over the UART), Temperature (thermistor)
+and PWM (fans, heater).
 
 ## Board facts
 
@@ -155,9 +155,31 @@ boot summary on the M8P console shows the first reading:
            thermistor PV[2]: 23.4 C, ADC 62410
 ```
 
+The heater can also be a PWM output instead of the Digital Pin (PID output
+to the SP): `{ "Type": "PWM", "SP[i]": 0, "PWM Pin": "PB_13", "Period us":
+100000, "Safe Duty": 0 }`.
+
 `"Pullup"` in `"Thermistor"` sets another pullup (Ohm). Only NTC thermistors
 (Beta formula), no PT1000. The heater output goes low when the node loses the
 hub or LinuxCNC.
+
+## Fans (PWM)
+
+Part fan PA0 on LinuxCNC set point 1, hotend fan PA1 on set point 2, same keys
+as a software PWM on the M8P:
+
+```json
+{ "Type": "PWM", "Comment": "part fan", "SP[i]": 1, "PWM Pin": "PA_0",
+  "Period us": 10000, "Safe Duty": 0 },
+{ "Type": "PWM", "Comment": "hotend fan", "SP[i]": 2, "PWM Pin": "PA_1",
+  "Period us": 10000, "Safe Duty": 100 }
+```
+
+In HAL `remora.SP.1` = 0 ... 100 (%). The node makes the PWM itself (100 Hz by
+default, `"Period us"` 1000 or more); `"PWM Max"` 1 ... 255 limits the range
+(e.g. 128 for a 12 V fan on the 24 V supply). `"Safe Duty"` runs while
+LinuxCNC or the hub is gone: 100 keeps the hotend fan on, so the heat break
+stays cool. The SP must not be used by a module of the M8P.
 
 ## E-stop when the node is missing
 
