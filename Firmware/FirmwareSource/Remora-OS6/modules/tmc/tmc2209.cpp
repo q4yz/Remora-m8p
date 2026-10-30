@@ -78,21 +78,22 @@ void TMC2209::configure()
 
     driver->begin();
     
+    // the settings are only written, they arrive even without a reply: the version (IOIN) tells
+    // whether the driver answers, DRV_STATUS (test_connection) can read 0 on a working driver
     printf("Testing connection to TMC driver...");
-    result = driver->test_connection();
-    if (result) {
-        printf("failed!\n");
-        printf("Likely cause: ");
-        switch(result) {
-            case 1: printf("loose connection\n"); break;
-            case 2: printf("no power\n"); break;
-        }
-        printf("  Fix the problem and reset board.\n");
-        //abort();
+    result = driver->version();
+    if (result == 0 || result == 0xFF)
+    {
+        printf("no reply. The settings are written anyway: holding current on the motor\n");
+        printf("  means they arrived (only the reply is missing), else check motor power and the UART pin\n");
+    }
+    else if (result != 0x21)
+    {
+        printf("unexpected version 0x%02x (not a TMC2209?)\n", result);
     }
     else   
     {
-        printf("OK\n");
+        printf("OK, version 0x21\n");
     }
 
 
