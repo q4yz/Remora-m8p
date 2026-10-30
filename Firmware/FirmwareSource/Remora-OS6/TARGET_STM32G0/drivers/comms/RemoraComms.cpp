@@ -33,6 +33,7 @@ RemoraComms::RemoraComms(volatile rxData_t* ptrRxData, volatile txData_t* ptrTxD
     this->SPIdataError = false;
     this->uploadFrame = false;
     this->uploadMode = false;
+    this->initialised = false;
     this->dbgFrames = this->dbgReads = this->dbgWrites = this->dbgRejects = this->dbgTimeouts = 0;
     this->dbgLastBad = 0;
 
@@ -73,7 +74,11 @@ void RemoraComms::init()
 {
     if (this->spiHandle.Instance != SPI2) return;
 
-    printf("Initialising SPI2 slave\n");
+    // also called by restartDMA to re-align, print only the first time
+    bool verbose = !this->initialised;
+    this->initialised = true;
+
+    if (verbose) printf("Initialising SPI2 slave\n");
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -109,7 +114,7 @@ void RemoraComms::init()
 
     HAL_SPI_Init(&this->spiHandle);
 
-    printf("Initialising DMA for SPI2\n");
+    if (verbose) printf("Initialising DMA for SPI2\n");
 
     __HAL_RCC_DMA1_CLK_ENABLE();
 
@@ -186,17 +191,14 @@ void RemoraComms::SPItasks()
 
         if (this->resetSPI)
         {
+            // the frame boundary is lost: the DMA was started in the middle of a frame (the host
+            // was already clocking when the board booted) or a byte went missing. The DMA is
+            // circular, every following frame would be shifted, so drop this one and re-align on
+            // the next NSS edge, in normal operation as in upload mode. Counted in dbgTimeouts,
+            // no printf (it blocks the main loop and costs more frames)
             this->resetSPI = false;
-
-            if (this->uploadMode)
-            {
-                // the frame boundary has been lost (DMA restarted mid transfer), drop the frame and re-align
-                this->restartDMA();
-                return;
-            }
-
-            // counted in dbgTimeouts only: a printf here blocks the main loop for ~1.5 ms, the
-            // next frames time out too and the link drops (a burst of "Reset SPI now")
+            this->restartDMA();
+            return;
         }
 
         switch (this->spiRxBuffer.header)
@@ -242,6 +244,12 @@ void RemoraComms::SPItasks()
                 if (this->rejectCnt > 5)
                 {
                     this->SPIdataError = true;
+                }
+                // shifted frames when the host sends faster than the DMA timeout above (LinuxCNC:
+                // every 1 ms), the next frame completes the count: re-align as well
+                if (this->rejectCnt >= 2)
+                {
+                    this->restartDMA();
                 }
         }
     }

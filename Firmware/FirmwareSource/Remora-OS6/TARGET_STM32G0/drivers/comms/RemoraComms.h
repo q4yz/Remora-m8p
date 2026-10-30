@@ -38,7 +38,8 @@ class RemoraComms : public Module
 
         rxData_t            uploadRxBuffer;     // copy of the last SD upload frame
         bool                uploadFrame;        // a new SD upload frame is waiting in uploadRxBuffer
-        bool                uploadMode;         // SD upload in progress, re-align the DMA on framing errors
+        bool                uploadMode;         // SD upload in progress
+        bool                initialised;        // init() ran once, re-inits (re-align) are silent
 
         PinName             interruptPin;
         InterruptIn         slaveSelect;
