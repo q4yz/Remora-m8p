@@ -10,6 +10,9 @@
     "artifact_name": "firmware",
 
     "target_overrides": {
+        "*": {
+            "fat_chan.ff_use_trim": 0
+        },
         "LPC1768": {
             "target.mbed_app_start": "0x4000",
             "platform.stdio-baud-rate": 115200,

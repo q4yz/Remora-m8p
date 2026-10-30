@@ -335,6 +335,28 @@ uint8_t SDUpload::verifyAndRename()
     remove(path);
     if (rename(UPLOAD_TMP_PATH, path)) return UPLOAD_ERR_RENAME;
 
+    // read the final file once more: removing the old one must not have touched the new data
+    // (with FAT TRIM the delete erased sectors, some SD cards zeroed the new file with them;
+    // TRIM is off in mbed_app.json, this catches anything like it)
+    file = fopen(path, "rb");
+    if (!file) return UPLOAD_ERR_VERIFY;
+
+    crc = 0;
+    total = 0;
+    while ((n = fread(this->buffer, 1, UPLOAD_BUF_SIZE, file)) > 0)
+    {
+        crc = crc32(crc, this->buffer, n);
+        total += n;
+        watchdog.kick();
+    }
+    fclose(file);
+
+    if (total != this->fileSize || crc != this->expectedCrc)
+    {
+        printf("SD upload: %s is corrupt after the rename\n", this->target);
+        return UPLOAD_ERR_VERIFY;
+    }
+
     return UPLOAD_ERR_NONE;
 }
 
