@@ -15,7 +15,7 @@ could disturb the base thread).
 | Identifier | Name | Direction | Phase |
 |---|---|---|---|
 | `0x080` | SYNC | hub → all | reserved |
-| `0x080 + n` | EMCY | node → hub | 5 |
+| `0x080 + n` | EMCY (TMC2209 status) | node → hub | TMC2209 |
 | `0x100 + n` | JOINT (step generator commands) | hub → node | joints |
 | `0x180 + n` | JOINT FEEDBACK (step counts) | node → hub | joints |
 | `0x200 + n` | COMMAND (process data) | hub → node | 3/4 |
@@ -106,6 +106,9 @@ Module types (pins as `port << 4 | number`, port 0 = A, `0xFF` none):
   4-5 modifier: none, pull up, pull down, open drain), node local data bit.
 - `0x02` stepgen, data: step pin, 0, node local joint (0 or 1), direction
   pin, enable pin (active low, `0xFF`: none).
+- `0x03` TMC2209, data: UART pin, flags (bits 0-1 address, bit 2
+  StealthChop, bits 4-7 microsteps as power of 2), current / 10 mA, Rsense
+  mOhm, stall threshold (SGTHRS). Up to 2 per node, one per UART pin.
 
 ## Process data (phase 3)
 
@@ -181,9 +184,43 @@ Latency: the feedback is one servo period older than for a local joint
 JOINT and one JOINT FEEDBACK (~130 µs each at 1 Mbit/s) per node and servo
 period, about 26 % of the bus per node with joints.
 
+## TMC2209 drivers
+
+A `"TMC2209"` module in a node entry, same keys as the local module:
+
+```json
+{ "Type": "TMC2209", "Comment": "extruder", "RX pin": "PA_15", "RSense": 0.11,
+  "Address": 0, "Current": 800, "Microsteps": 16, "Stealth chop": "on",
+  "Stall sensitivity": 0 }
+```
+
+`"Current"` mA RMS (up to 2000), `"Microsteps"` 1, 2, 4 ... 256,
+`"Stealth chop"` `"on"` / `"off"` (SpreadCycle, the default), `"Stall
+sensitivity"` 0 (off) ... 255. The hub checks the values when it reads
+config.txt.
+
+The node configures the driver itself over its single wire UART, bit-banged
+in the base thread at 13333 baud (3 base ticks per bit), without blocking its
+main loop (about 100 ms per configuration):
+
+- read IOIN (version), read IFCNT, write GSTAT (clear), GCONF, CHOPCONF,
+  IHOLD_IRUN, TPOWERDOWN, PWMCONF, TCOOLTHRS, SGTHRS, read IFCNT again: it
+  must have gone up by 8, else "writes not taken", retried every second
+- then GSTAT every second: reset flag set (the driver lost its motor power)
+  or no answer → configure again
+- current as the Remora TMC module (TMCStepper `rms_current`, hold current
+  half, vsense for small currents), but with the internal reference
+  (`I_scale_analog` 0), VREF is not used; chopper toff 3, hstrt 5, hend 0,
+  tbl 2, interpolation on
+
+EMCY `0x080 + n`, node → hub: byte 0 `0x01` (TMC), 1 module index, 2 status
+(0 not configured yet, 1 ok, 2 not answering, 3 writes not taken), 3 driver
+version (`0x21`); on a change and every second. The hub prints it in the boot
+summary and on changes. A driver that does not answer does not stop the node.
+
 ## Next phases
 
 3. **Remote modules**: temperature, heater, fans via SP / PV indices; the
-   hotend fan rule runs locally on the node; TMC2209 UART on the node.
-5. **Safety**: EMCY frames, node status bits to LinuxCNC in the 2 spare bytes
-   of the SPI frame.
+   hotend fan rule runs locally on the node.
+5. **Safety**: node faults (e.g. TMC2209 not answering) and status bits to
+   LinuxCNC in the 2 spare bytes of the SPI frame.

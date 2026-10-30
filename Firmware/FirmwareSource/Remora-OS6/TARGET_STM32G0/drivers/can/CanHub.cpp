@@ -1,4 +1,5 @@
 #include "CanHub.h"
+#include "NodeTmc2209.h"
 
 #include <string.h>
 
@@ -293,6 +294,99 @@ bool CanHub::addStepgen(int node, int joint, const char* stepName, const char* d
 }
 
 
+bool CanHub::addTmc2209(int node, const char* pinName, float rsense, int address, int current, int microsteps,
+                        bool stealth, int stall)
+{
+    canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
+    uint8_t pin;
+    char name[6];
+
+    if (!n)
+    {
+        printf("CAN: module for node %d, which is not configured\n", node);
+        return false;
+    }
+    if (n->moduleCount >= CAN_MODULES_MAX)
+    {
+        printf("CAN: node %d: more than %d modules\n", node, CAN_MODULES_MAX);
+        return false;
+    }
+    if (n->tmcCount >= CAN_NODE_TMC)
+    {
+        printf("CAN: node %d: more than %d TMC2209\n", node, CAN_NODE_TMC);
+        return false;
+    }
+    if (!canParsePin(pinName, &pin))
+    {
+        printf("CAN: node %d: TMC2209, invalid RX pin '%s'\n", node, pinName ? pinName : "");
+        return false;
+    }
+    if (this->pinUsed(n, pin))
+    {
+        printf("CAN: node %d: pin %s used twice\n", node, canPinName(pin, name));
+        return false;
+    }
+    int mstep = 0;
+    while (mstep < 8 && (1 << mstep) < microsteps) mstep++;
+    int mOhm = (int)(rsense * 1000.0f + 0.5f);
+    if ((1 << mstep) != microsteps || address < 0 || address > 3 || current < 10 || current > TMC_CURRENT_MAX ||
+        mOhm < 1 || mOhm > 255 || stall < 0 || stall > 255)
+    {
+        printf("CAN: node %d: TMC2209 %s: RSense 0.001 ... 0.255, Address 0 ... 3, Current 10 ... %d mA, "
+               "Microsteps 1, 2, 4 ... 256, Stall sensitivity 0 ... 255\n", node, canPinName(pin, name), TMC_CURRENT_MAX);
+        return false;
+    }
+
+    n->tmcStatus[n->moduleCount] = TMC_STATUS_NONE;
+    n->tmcCount++;
+
+    uint8_t* m = n->modules[n->moduleCount++];
+    m[0] = MODULE_TMC2209;
+    m[1] = pin;
+    m[2] = (uint8_t)(address | (stealth ? TMC_STEALTH : 0) | (mstep << TMC_MSTEP_SHIFT));
+    m[3] = (uint8_t)((current + 5) / 10);
+    m[4] = (uint8_t)mOhm;
+    m[5] = (uint8_t)stall;
+
+    printf("CAN: node %d module %d: TMC2209 UART %s, address %d, %d mA, %d microsteps, %s\n", node, n->moduleCount,
+           canPinName(pin, name), address, m[3] * 10, microsteps, stealth ? "StealthChop" : "SpreadCycle");
+    return true;
+}
+
+
+uint8_t CanHub::getTmcStatus(int node, int driver)
+{
+    canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
+    if (!n) return TMC_STATUS_NONE;
+    for (int i = 0; i < n->moduleCount; i++)
+    {
+        if (n->modules[i][0] == MODULE_TMC2209 && driver-- == 0) return n->tmcStatus[i];
+    }
+    return TMC_STATUS_NONE;
+}
+
+
+void CanHub::handleEmcy(const canFrame_t& frame)
+{
+    canNodeEntry_t* n = this->findNode((uint8_t)(frame.id - CAN_ID_EMCY));
+    if (!n || frame.len < 4 || frame.data[0] != EMCY_TMC) return;
+
+    uint8_t i = frame.data[1];
+    if (i >= n->moduleCount || n->modules[i][0] != MODULE_TMC2209) return;
+    if (n->tmcStatus[i] != frame.data[2]) n->tmcReport |= (uint16_t)(1u << i);
+    n->tmcStatus[i] = frame.data[2];
+    n->tmcVersion[i] = frame.data[3];
+}
+
+
+void CanHub::printTmc(const canNodeEntry_t* n, int i)
+{
+    char name[6];
+    printf("TMC2209 %s %s", canPinName(n->modules[i][1], name), tmcStatusText(n->tmcStatus[i]));
+    if (n->tmcStatus[i] == TMC_STATUS_OK) printf(", version 0x%02x", n->tmcVersion[i]);
+}
+
+
 void CanHub::sendIdentify()
 {
     canFrame_t f = {};
@@ -496,6 +590,8 @@ void CanHub::handleConfigReply(const canFrame_t& frame, uint32_t now)
         // the node counts from 0 again, the position LinuxCNC sees carries on from where it was
         for (int i = 0; i < CAN_NODE_JOINTS; i++) n->jointRaw[i] = 0;
         n->jointPending = true;
+        // the node configures its TMC drivers now, it reports them
+        for (int i = 0; i < n->moduleCount; i++) n->tmcStatus[i] = TMC_STATUS_NONE;
         return;
     }
 
@@ -691,6 +787,10 @@ void CanHub::service(uint32_t now, bool quiet, bool safe, uint16_t outputs)
         {
             this->handleJointFeedback(f);
         }
+        else if (f.id > CAN_ID_EMCY && f.id <= CAN_ID_EMCY + CAN_NODE_MAX)
+        {
+            this->handleEmcy(f);
+        }
         else if (f.id > CAN_ID_STATUS && f.id <= CAN_ID_STATUS + CAN_NODE_MAX)
         {
             this->handleStatus(f);
@@ -786,6 +886,13 @@ void CanHub::bootReport()
             printf("online, configured, %d module(s)", n->moduleCount);
             for (int k = 0; k < n->jointCount; k++) printf("%s%d", k ? ", " : ", joint(s) ", n->jointNum[k]);
             printf("\n");
+            for (int k = 0; k < n->moduleCount; k++)
+            {
+                if (n->modules[k][0] != MODULE_TMC2209) continue;
+                printf("           ");
+                this->printTmc(n, k);
+                printf("\n");
+            }
         }
         else if (n->cfgState == CFG_STATE_FAILED)
         {
@@ -801,6 +908,7 @@ void CanHub::bootReport()
         // summarised here, later changes are printed by report()
         n->reported = false;
         n->cfgReport = CFG_REPORT_NONE;
+        n->tmcReport = 0;
     }
 
     for (int i = 0; i < CAN_UNKNOWN_MAX; i++)
@@ -867,6 +975,15 @@ void CanHub::report()
             case CFG_REPORT_TIMEOUT:
                 printf("CAN: node %d (%s) does not answer the configuration, retrying\n", n->node, n->comment);
                 break;
+        }
+
+        for (int k = 0; n->tmcReport && k < n->moduleCount; k++)
+        {
+            if (!(n->tmcReport & (1u << k))) continue;
+            n->tmcReport &= (uint16_t)~(1u << k);
+            printf("CAN: node %d (%s) ", n->node, n->comment);
+            this->printTmc(n, k);
+            printf("\n");
         }
     }
 

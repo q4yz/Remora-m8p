@@ -10,7 +10,68 @@ static int fails;
 
 static std::string hex(const uint8_t u[6]) { char b[13]; for (int i = 0; i < 6; i++) sprintf(b + 2 * i, "%02x", u[i]); return b; }
 
-struct Node { RemoraCAN can; CanNode* node; SimIo io; Node(uint32_t a, uint32_t b, uint32_t c) { sim_uid[0] = a; sim_uid[1] = b; sim_uid[2] = c; node = new CanNode(&can); } };
+/* a TMC2209 on the single wire UART of a simulated node, bit by bit at the node base tick (3 ticks per bit) */
+struct SimTmc {
+    uint8_t pin, addr = 0;
+    bool powered = true;
+    int dropWrites = 0;                     /* ignore this many writes (corrupted on the line) */
+    uint32_t regs[128];
+    uint8_t ifcnt;
+    int writes = 0, reads = 0;
+    int rxBit = -1, rxTick = 0, len = 0, idle = 0; uint16_t rxShift = 0; uint8_t buf[8];
+    uint8_t tx[8]; int txLen = 0, txByte = 0, txBit = 0, txTick = 0, delay = 0;
+    SimTmc(uint8_t pin) : pin(pin) { reset(); }
+    void reset() { memset(regs, 0, sizeof(regs)); regs[0x01] = 1; regs[0x06] = 0x21u << 24; regs[0x6C] = 0x10000053; ifcnt = 0; }
+    void datagram() {
+        if (len == 4 && !(buf[2] & 0x80)) {                 /* read request */
+            len = 0;
+            if (!powered || buf[0] != 0x05 || buf[1] != addr || buf[3] != tmcCrc(buf, 3)) return;
+            uint32_t v = buf[2] == 0x02 ? ifcnt : regs[buf[2] & 0x7F];
+            tx[0] = 0x05; tx[1] = 0xFF; tx[2] = buf[2];
+            tx[3] = (uint8_t)(v >> 24); tx[4] = (uint8_t)(v >> 16); tx[5] = (uint8_t)(v >> 8); tx[6] = (uint8_t)v;
+            tx[7] = tmcCrc(tx, 7);
+            txLen = 8; delay = 24; reads++;                  /* SENDDELAY 8 bit times */
+        }
+        else if (len == 8) {                                 /* write */
+            len = 0;
+            if (!powered || buf[0] != 0x05 || buf[1] != addr || buf[7] != tmcCrc(buf, 7)) return;
+            if (dropWrites > 0) { dropWrites--; return; }
+            uint32_t v = ((uint32_t)buf[3] << 24) | ((uint32_t)buf[4] << 16) | ((uint32_t)buf[5] << 8) | buf[6];
+            uint8_t r = buf[2] & 0x7F;
+            if (r == 0x01) regs[r] &= ~v; else regs[r] = v;  /* GSTAT: write 1 to clear */
+            ifcnt++; writes++;
+        }
+    }
+    void tick(SimIo& io) {
+        bool driven = io.output[pin];
+        if (txLen) {                                         /* answering */
+            if (delay) { if (--delay == 0) { txByte = 0; txBit = 0; txTick = 1; } return; }
+            if (--txTick) return;
+            if (txBit == 10) { txBit = 0; if (++txByte >= txLen) { txLen = 0; if (!driven) io.level[pin] = true; return; } }
+            uint16_t frame = (uint16_t)((tx[txByte] << 1) | 0x200);
+            if (!driven) io.level[pin] = (frame >> txBit) & 1;
+            txBit++; txTick = 3;
+            return;
+        }
+        if (!driven) { io.level[pin] = true; rxBit = -1; return; }   /* pull up */
+        bool line = io.level[pin];
+        if (rxBit < 0) {
+            if (!line) { rxBit = 0; rxTick = 4; rxShift = 0; }
+            else if (++idle > 60) len = 0;                   /* gap: datagram over */
+            return;
+        }
+        if (--rxTick) return;
+        if (rxBit < 8) {
+            rxShift = (uint16_t)((rxShift >> 1) | (line ? 0x80 : 0));
+            rxTick = 3;
+            if (++rxBit == 8) { if (len < 8) buf[len++] = (uint8_t)rxShift; idle = 0; datagram(); }
+            return;
+        }
+        rxBit = -1;
+    }
+};
+
+struct Node { RemoraCAN can; CanNode* node; SimIo io; SimTmc* tmc = nullptr; Node(uint32_t a, uint32_t b, uint32_t c) { sim_uid[0] = a; sim_uid[1] = b; sim_uid[2] = c; node = new CanNode(&can); } };
 
 /* what the hub gets from LinuxCNC */
 static bool simSafe = true;
@@ -30,7 +91,10 @@ static void run(CanHub& hub, std::vector<Node*> nodes, uint32_t& now, uint32_t m
         for (Node* n : nodes) {
             simIo = &n->io;
             n->node->service(now);
-            for (int k = 0; k < CAN_NODE_BASE_FREQ / 1000; k++) n->node->baseTick();
+            for (int k = 0; k < CAN_NODE_BASE_FREQ / 1000; k++) {
+                n->node->baseTick();
+                if (n->tmc) n->tmc->tick(n->io);
+            }
         }
     }
 }
@@ -45,6 +109,17 @@ static void setupJoint(CanHub& hub, Node& a, uint32_t& now) {
     CHECK(hub.jointMask() == (1u << 3));
     run(hub, {&a}, now, 1500);
     CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getJointCount() == 1);
+}
+
+/* EBB42: stepgen joint 3 and its TMC2209 on PA_15, 800 mA, 16 microsteps, StealthChop, configured */
+static const uint8_t PA15 = CAN_PIN(0, 15);
+static void setupTmc(CanHub& hub, Node& a, SimTmc& tmc, uint32_t& now) {
+    a.tmc = &tmc;
+    hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+    CHECK(hub.addStepgen(1, 3, "PD_0", "PD_1", "PD_2"));
+    CHECK(hub.addTmc2209(1, "PA_15", 0.11f, 0, 800, 16, true, 0));
+    run(hub, {&a}, now, 1500);
+    CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getTmcCount() == 1);
 }
 
 /* node with an output on PB_8 (LinuxCNC output bit 1, safe high) and an inverted, pulled up
@@ -395,6 +470,90 @@ int main(int argc, char** argv) {
         run(hub, {a}, now, 5);
         CHECK(simFeedback[3] == pos + a->node->getJointPosition(0));
         simSafe = true;
+    }
+    else if (sc == "tmc") {
+        Node a(1, 2, 3); SimTmc tmc(PA15);
+        RemoraCAN hc; CanHub hub(&hc);
+        setupTmc(hub, a, tmc, now);
+        CHECK(a.io.configured[PA15] && a.io.modifier[PA15] == DPIN_MOD_PULLUP);
+        CHECK(a.node->getTmc(0).getStatus() == TMC_STATUS_OK && a.node->getTmc(0).getVersion() == 0x21);
+        CHECK(hub.getTmcStatus(1, 0) == TMC_STATUS_OK);
+        printf("  %d writes, %d reads, GCONF 0x%x CHOPCONF 0x%08x IHOLD_IRUN 0x%06x\n", tmc.writes, tmc.reads,
+               tmc.regs[0x00], tmc.regs[0x6C], tmc.regs[0x10]);
+        CHECK(tmc.writes == TMC_CONFIG_REGS);
+        CHECK(tmc.regs[0x00] == 0x1C0);                                       /* UART, register microsteps, StealthChop */
+        CHECK(((tmc.regs[0x6C] >> 24) & 0xF) == 4 && (tmc.regs[0x6C] & (1u << 17)) && (tmc.regs[0x6C] & 0xF) == 3);
+        CHECK(tmc.regs[0x10] == (12u | (25u << 8) | (10u << 16)));            /* 800 mA, 0.11 Ohm: CS 25 with vsense */
+        CHECK(tmc.regs[0x01] == 0 && tmc.regs[0x70] == 0xC80D0E24 && tmc.regs[0x40] == 0);
+        int reads = tmc.reads;
+        run(hub, {&a}, now, 3100);                                            /* GSTAT check every second, no writes */
+        CHECK(tmc.reads - reads >= 3 && tmc.reads - reads <= 4 && tmc.writes == TMC_CONFIG_REGS && a.node->getTmc(0).getConfigs() == 1);
+        simSafe = false; simEnable = 1u << 3; simFreq[3] = 1000;              /* the joint runs alongside */
+        run(hub, {&a}, now, 200);
+        CHECK(a.node->getJointPosition(0) >= 195 && a.node->getJointPosition(0) <= 201);
+        simSafe = true;
+    }
+    else if (sc == "tmc-reset") {
+        Node a(1, 2, 3); SimTmc tmc(PA15);
+        RemoraCAN hc; CanHub hub(&hc);
+        setupTmc(hub, a, tmc, now);
+        CHECK(a.node->getTmc(0).getStatus() == TMC_STATUS_OK);
+        tmc.reset();                                                          /* motor power off and on: driver defaults */
+        run(hub, {&a}, now, 1300);
+        CHECK(a.node->getTmc(0).getStatus() == TMC_STATUS_OK && a.node->getTmc(0).getConfigs() == 2);
+        CHECK(tmc.regs[0x00] == 0x1C0 && tmc.regs[0x01] == 0 && tmc.writes == 2 * TMC_CONFIG_REGS);
+        CHECK(hub.getTmcStatus(1, 0) == TMC_STATUS_OK);
+    }
+    else if (sc == "tmc-no-power") {
+        Node a(1, 2, 3); SimTmc tmc(PA15);
+        tmc.powered = false;                                                  /* no motor power: no answer */
+        RemoraCAN hc; CanHub hub(&hc);
+        setupTmc(hub, a, tmc, now);
+        run(hub, {&a}, now, 500);
+        CHECK(a.node->getTmc(0).getStatus() == TMC_STATUS_NO_ANSWER && hub.getTmcStatus(1, 0) == TMC_STATUS_NO_ANSWER);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && hub.runningMask() == 1);  /* the node runs anyway */
+        CHECK(a.io.output[PA15] && a.io.level[PA15]);                         /* line back to idle high */
+        tmc.powered = true;
+        run(hub, {&a}, now, 1300);                                            /* retried every second */
+        CHECK(a.node->getTmc(0).getStatus() == TMC_STATUS_OK && hub.getTmcStatus(1, 0) == TMC_STATUS_OK);
+        CHECK(tmc.regs[0x00] == 0x1C0);
+    }
+    else if (sc == "tmc-write-lost") {
+        Node a(1, 2, 3); SimTmc tmc(PA15);
+        tmc.dropWrites = 1;
+        RemoraCAN hc; CanHub hub(&hc);
+        a.tmc = &tmc;
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addTmc2209(1, "PA_15", 0.11f, 0, 800, 16, true, 0));
+        run(hub, {&a}, now, 1200);
+        CHECK(a.node->getTmc(0).getStatus() == TMC_STATUS_WRITE_FAILED);
+        run(hub, {&a}, now, 1300);
+        CHECK(a.node->getTmc(0).getStatus() == TMC_STATUS_OK && tmc.regs[0x00] == 0x1C0);
+    }
+    else if (sc == "tmc-config") {
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode("0e0d81e4210c", 1, "");
+        CHECK(hub.addStepgen(1, 3, "PD_0", "PD_1", "PD_2"));
+        CHECK(!hub.addTmc2209(1, "PA_15", 0.11f, 0, 800, 3, true, 0));       /* microsteps not a power of 2 */
+        CHECK(!hub.addTmc2209(1, "PA_15", 0.11f, 0, 800, 512, true, 0));
+        CHECK(!hub.addTmc2209(1, "PA_15", 0.11f, 0, 0, 16, true, 0));        /* current */
+        CHECK(!hub.addTmc2209(1, "PA_15", 0.11f, 0, 2500, 16, true, 0));
+        CHECK(!hub.addTmc2209(1, "PA_15", 0.11f, 4, 800, 16, true, 0));      /* address */
+        CHECK(!hub.addTmc2209(1, "PA_15", 0.0f, 0, 800, 16, true, 0));       /* Rsense */
+        CHECK(!hub.addTmc2209(1, "PD_1", 0.11f, 0, 800, 16, true, 0));       /* stepgen pin */
+        CHECK(!hub.addTmc2209(1, "XA_15", 0.11f, 0, 800, 16, true, 0));
+        CHECK(hub.addTmc2209(1, "PA_15", 0.11f, 0, 800, 16, true, 0));
+        CHECK(!hub.addTmc2209(1, "PA_15", 0.11f, 1, 800, 16, true, 0));      /* one driver per UART pin */
+        CHECK(!hub.addDigitalPin(1, "PA_15", true, false, 0, false, false, 1));
+        CHECK(hub.addTmc2209(1, "PA_14", 0.11f, 0, 800, 1, false, 100));
+        CHECK(!hub.addTmc2209(1, "PA_13", 0.11f, 0, 800, 16, true, 0));      /* 2 per node */
+        /* the node checks the record too: 32 microsteps as 2^9 */
+        Node a(1, 2, 3);
+        RemoraCAN hc2; CanHub hub2(&hc2);
+        hub2.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub2.addTmc2209(1, "PB_0", 0.11f, 0, 800, 16, true, 0));       /* CAN RX: rejected by the node */
+        run(hub2, {&a}, now, 3000);
+        CHECK(a.node->getState() == NODE_STATE_PREOP && hub2.runningMask() == 0 && a.node->getTmcCount() == 0);
     }
     printf("%s\n", fails ? "FAILED" : "passed");
     return fails != 0;

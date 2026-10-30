@@ -24,7 +24,8 @@ CanNode::CanNode(RemoraCAN* can, uint32_t baseFreq) :
     jointCount(0),
     lastJoint(0),
     jointsStopped(false),
-    jointFrames(0)
+    jointFrames(0),
+    tmcCount(0)
 {
     memset(this->joints, 0, sizeof(this->joints));
     // as the Remora stepgen: no floating point in the interrupt (the Cortex-M0+ has no FPU)
@@ -169,6 +170,16 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
     {
         if (m.bit >= CAN_NODE_JOINTS) return CFG_ERR_JOINT;
     }
+    else if (m.type == MODULE_TMC2209)
+    {
+        if ((m.flags >> TMC_MSTEP_SHIFT) > 8 || m.bit == 0 || m.bit > TMC_CURRENT_MAX / 10 || m.dirPin == 0)
+        {
+            return CFG_ERR_VALUE;
+        }
+        int drivers = 0;
+        for (int i = 0; i < this->pendingCount; i++) if (this->pending[i].type == MODULE_TMC2209) drivers++;
+        if (drivers >= CAN_NODE_TMC) return CFG_ERR_FULL;
+    }
     else return CFG_ERR_TYPE;
 
     uint8_t pins[3], used[3];
@@ -189,7 +200,7 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
         {
             for (int l = 0; l < n; l++) if (used[l] == pins[k]) { m.pin = pins[k]; return CFG_ERR_PIN_USED; }
         }
-        if (p.type != m.type || p.bit != m.bit) continue;
+        if (p.type != m.type || p.bit != m.bit || m.type == MODULE_TMC2209) continue;
         if (m.type == MODULE_STEPGEN) return CFG_ERR_JOINT;
         if ((p.flags & DPIN_OUTPUT) == (m.flags & DPIN_OUTPUT)) return CFG_ERR_BIT;
     }
@@ -262,6 +273,13 @@ void CanNode::handleConfig(const canFrame_t& frame)
                        canPinName(m.pin, name), canPinName(m.dirPin, dir),
                        m.enablePin == CAN_PIN_NONE ? "none" : canPinName(m.enablePin, enable));
             }
+            else if (m.type == MODULE_TMC2209)
+            {
+                printf("CONFIG: module %d: TMC2209 UART %s, address %d, %d mA, %d microsteps, %s, stall %d\n",
+                       c.index + 1, canPinName(m.pin, name), m.flags & TMC_ADDR_MASK, m.bit * 10,
+                       1 << (m.flags >> TMC_MSTEP_SHIFT), (m.flags & TMC_STEALTH) ? "StealthChop" : "SpreadCycle",
+                       m.enablePin);
+            }
             else
             {
                 printf("CONFIG: module %d: digital %s %s, bit %d\n", c.index + 1,
@@ -332,6 +350,19 @@ void CanNode::applyConfig()
             if (m.bit + 1 > this->jointCount) this->jointCount = (uint8_t)(m.bit + 1);
             continue;
         }
+        if (m.type == MODULE_TMC2209)
+        {
+            // UART line idle high, the pull up holds it while the driver answers
+            canIoConfigure(m.pin, true, DPIN_MOD_PULLUP, true);
+            int k = this->tmcCount;
+            this->tmc[k].setup(m.pin, m.flags & TMC_ADDR_MASK, m.dirPin, (uint16_t)(m.bit * 10),
+                               (uint16_t)(1u << (m.flags >> TMC_MSTEP_SHIFT)), (m.flags & TMC_STEALTH) != 0, m.enablePin);
+            this->tmc[k].start();
+            this->tmcModule[k] = (uint8_t)i;
+            this->lastEmcy[k] = this->now;
+            this->tmcCount = (uint8_t)(k + 1);      // last: the interrupt ticks it from now on
+            continue;
+        }
         bool output = (m.flags & DPIN_OUTPUT) != 0;
         canIoConfigure(m.pin, output, (m.flags & DPIN_MOD_MASK) >> DPIN_MOD_SHIFT, (m.flags & DPIN_SAFE_HIGH) != 0);
     }
@@ -354,6 +385,8 @@ void CanNode::releaseModules()
     this->stopJoints();
     for (int i = 0; i < CAN_NODE_JOINTS; i++) this->joints[i].active = false;
     this->jointCount = 0;
+    for (int i = 0; i < this->tmcCount; i++) this->tmc[i].stop();
+    this->tmcCount = 0;
 
     uint8_t pins[3];
     for (int i = 0; i < this->moduleCount; i++)
@@ -498,8 +531,50 @@ void CanNode::sendJointFeedback(uint8_t seq)
 }
 
 
+/***********************************************************************
+    TMC2209 drivers
+************************************************************************/
+
+bool CanNode::sendTmcStatus(int i)
+{
+    canFrame_t f;
+    f.id = CAN_ID_EMCY + this->node;
+    f.extended = false;
+    f.len = 4;
+    f.data[0] = EMCY_TMC;
+    f.data[1] = this->tmcModule[i];
+    f.data[2] = this->tmc[i].getStatus();
+    f.data[3] = this->tmc[i].getVersion();
+    return this->can->send(f);
+}
+
+
+void CanNode::serviceTmc()
+{
+    char name[6];
+    for (int i = 0; i < this->tmcCount; i++)
+    {
+        NodeTmc2209& t = this->tmc[i];
+        bool changed = t.service(this->now);
+        if (changed)
+        {
+            printf("TMC2209 %s: %s", canPinName(t.getPin(), name), tmcStatusText(t.getStatus()));
+            if (t.getStatus() == TMC_STATUS_OK) printf(", version 0x%02x", t.getVersion());
+            printf("\n");
+        }
+        // on a change, and regularly: the hub may have missed it
+        if ((changed || (this->now - this->lastEmcy[i]) >= CAN_EMCY_REPEAT_MS) && this->sendTmcStatus(i))
+        {
+            this->lastEmcy[i] = this->now;
+        }
+    }
+}
+
+
 void CanNode::baseTick()
 {
+    for (int i = 0; i < this->tmcCount; i++) this->tmc[i].tick();
+
     for (int i = 0; i < CAN_NODE_JOINTS; i++)
     {
         canNodeJoint_t& j = this->joints[i];
@@ -583,6 +658,8 @@ void CanNode::service(uint32_t now)
             this->stopJoints();
             printf("no JOINT from the hub, joints stopped, drivers disabled\n");
         }
+
+        this->serviceTmc();
 
         // TX queue full (nobody acknowledges): try again in the next ms, not on every loop pass
         uint16_t in = this->readInputs();

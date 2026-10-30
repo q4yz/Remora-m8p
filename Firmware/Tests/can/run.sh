@@ -5,13 +5,14 @@ cd "$(dirname "$0")"
 D=../../FirmwareSource/Remora-OS6/TARGET_STM32G0/drivers/can
 B=$(mktemp -d)
 # the sources include "RemoraCAN.h" from their own folder, build copies next to the simulated bus
-cp $D/CanHub.* $D/CanNode.* $D/canProtocol.h $D/canNodeIo.h stubs/RemoraCAN.h stubs/canNodeIoSim.* "$B"/
-g++ -std=c++14 -O1 -g -Wall -Wextra -Istubs -I"$B" -include vector test.cpp "$B"/CanHub.cpp "$B"/CanNode.cpp "$B"/canNodeIoSim.cpp -o "$B"/test || exit 1
+cp $D/CanHub.* $D/CanNode.* $D/NodeTmc2209.* $D/canProtocol.h $D/canNodeIo.h stubs/RemoraCAN.h stubs/canNodeIoSim.* "$B"/
+g++ -std=c++14 -O1 -g -Wall -Wextra -Istubs -I"$B" -include vector test.cpp "$B"/CanHub.cpp "$B"/CanNode.cpp \
+    "$B"/NodeTmc2209.cpp "$B"/canNodeIoSim.cpp -o "$B"/test || exit 1
 r=0
 for s in uuid assign two-nodes unknown lost node-reboot bad-config \
          pins config-io hub-lost node-reboot-config rejected bit-conflict lossy \
          mandatory no-status-bit joint joint-reverse joint-hub-lost joint-config \
-         joint-reboot; do "$B"/test $s || r=1; done
+         joint-reboot tmc tmc-reset tmc-no-power tmc-write-lost tmc-config; do "$B"/test $s || r=1; done
 rm -rf "$B"
 echo "ALL: $([ $r = 0 ] && echo PASSED || echo FAILED)"
 exit $r

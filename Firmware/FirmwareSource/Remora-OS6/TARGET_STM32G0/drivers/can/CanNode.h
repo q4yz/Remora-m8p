@@ -3,6 +3,7 @@
 
 #include "RemoraCAN.h"
 #include "canProtocol.h"
+#include "NodeTmc2209.h"
 
 /***********************************************************************
     CAN node (expansion board, e.g. BTT EBB42):
@@ -17,18 +18,21 @@
     joints   step generators: frequency commands from JOINT, step counts back
              in JOINT FEEDBACK; baseTick() makes the pulses, called by the node
              firmware from a timer interrupt at CAN_NODE_BASE_FREQ
+    TMC2209  drivers configured over their UART (NodeTmc2209, bit-banged in
+             baseTick), status to the hub in EMCY
 ************************************************************************/
 
 #define NODE_STEPBIT            22          // DDS accumulator bit that makes a step, as the Remora stepgen
 
+// the module record as received (type + 5 data bytes)
 typedef struct
 {
     uint8_t  type;              // MODULE_*
-    uint8_t  pin;               // CAN_PIN; stepgen: step pin
-    uint8_t  flags;             // DPIN_*
-    uint8_t  bit;               // local data bit; stepgen: local joint
-    uint8_t  dirPin;            // stepgen: direction pin
-    uint8_t  enablePin;         // stepgen: enable pin (active low), CAN_PIN_NONE: none
+    uint8_t  pin;               // CAN_PIN; stepgen: step pin; TMC2209: UART pin
+    uint8_t  flags;             // DPIN_*; TMC2209: TMC_*
+    uint8_t  bit;               // local data bit; stepgen: local joint; TMC2209: current / 10 mA
+    uint8_t  dirPin;            // stepgen: direction pin; TMC2209: Rsense mOhm
+    uint8_t  enablePin;         // stepgen: enable pin (active low), CAN_PIN_NONE: none; TMC2209: stall threshold
 } canNodeModule_t;
 
 // a step generator, the base thread interrupt (baseTick) and the main loop share it
@@ -83,6 +87,12 @@ class CanNode
         bool        jointsStopped;  // JOINT timeout, reported once
         uint32_t    jointFrames;    // JOINT frames since the configuration (debug)
 
+        // TMC2209 drivers, tmc[i] is module tmcModule[i]
+        NodeTmc2209 tmc[CAN_NODE_TMC];
+        volatile uint8_t tmcCount;
+        uint8_t     tmcModule[CAN_NODE_TMC];
+        uint32_t    lastEmcy[CAN_NODE_TMC];
+
         bool sendLssReply(void);
         void sendHeartbeat(void);
         void sendConfigReply(uint8_t cmd, uint8_t index, uint8_t status, uint8_t detail);
@@ -92,6 +102,8 @@ class CanNode
         void handleCommand(const canFrame_t& frame);
         void handleJoint(const canFrame_t& frame);
         void sendJointFeedback(uint8_t seq);
+        bool sendTmcStatus(int i);
+        void serviceTmc(void);
         void setJointEnable(canNodeJoint_t& j, bool enabled);
         void stopJoints(void);
         uint8_t checkModule(const canFrame_t& frame, canNodeModule_t& m);
@@ -119,6 +131,8 @@ class CanNode
         int32_t getJointPosition(int joint) { return this->joints[joint].count; }
         bool getJointEnabled(int joint) { return this->joints[joint].enabled; }
         uint32_t getJointFrames(void) { return this->jointFrames; }
+        uint8_t getTmcCount(void) { return this->tmcCount; }
+        NodeTmc2209& getTmc(int i) { return this->tmc[i]; }
 };
 
 #endif

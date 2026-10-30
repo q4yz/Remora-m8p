@@ -13,14 +13,23 @@ void canIoConfigure(uint8_t pin, bool output, uint8_t modifier, bool level)
     simIo->output[pin] = output;
     simIo->modifier[pin] = modifier;
     if (output) simIo->level[pin] = level;
+    simIo->latch[pin] = level;
     simIo->configures++;
 }
 
 void canIoRelease(uint8_t pin) { simIo->configured[pin] = false; simIo->output[pin] = false; }
 void canIoWrite(uint8_t pin, bool level)
 {
-    if (!simIo->configured[pin] || !simIo->output[pin]) return;
+    if (!simIo->configured[pin]) return;
+    simIo->latch[pin] = level;
+    if (!simIo->output[pin]) return;
     if (level && !simIo->level[pin]) simIo->rises[pin]++;
     simIo->level[pin] = level;
 }
 bool canIoRead(uint8_t pin) { return simIo->level[pin]; }
+void canIoSetOutput(uint8_t pin, bool output)
+{
+    if (!simIo->configured[pin]) return;
+    simIo->output[pin] = output;
+    if (output) simIo->level[pin] = simIo->latch[pin];
+}

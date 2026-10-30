@@ -1,8 +1,9 @@
 /***********************************************************************
     Remora CAN node firmware for the BTT EBB42 V1.1 / V1.2 (STM32G0B1CBT6)
 
-    Takes its node number and its modules (digital pins, step generators) from
-    the hub and exchanges the process data with it (CAN_PROTOCOL.md, CanNode).
+    Takes its node number and its modules (digital pins, step generators,
+    TMC2209 drivers) from the hub and exchanges the process data with it
+    (CAN_PROTOCOL.md, CanNode).
     Heater, thermistor and fans follow in the next phases. The step pulses are
     made in a TIM6 interrupt at CAN_NODE_BASE_FREQ (CanNode::baseTick).
 
@@ -107,6 +108,13 @@ int main()
                 printf("node: joint %d %s, position %ld steps, %lu JOINT frame(s)\n", j,
                        node.getJointEnabled(j) ? "enabled" : "disabled", (long)node.getJointPosition(j),
                        (unsigned long)node.getJointFrames());
+            }
+            for (int t = 0; t < node.getTmcCount(); t++)
+            {
+                NodeTmc2209& tmc = node.getTmc(t);
+                char name[6];
+                printf("node: TMC2209 %s %s, %lu configuration(s)\n", canPinName(tmc.getPin(), name),
+                       tmcStatusText(tmc.getStatus()), (unsigned long)tmc.getConfigs());
             }
             can.printStatus();
         }

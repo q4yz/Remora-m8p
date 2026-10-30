@@ -89,4 +89,16 @@ bool canIoRead(uint8_t pin)
     return port && HAL_GPIO_ReadPin(port, (uint16_t)(1u << CAN_PIN_NUMBER(pin))) == GPIO_PIN_SET;
 }
 
+
+void canIoSetOutput(uint8_t pin, bool output)
+{
+    GPIO_TypeDef* port = portOf(pin);
+    if (!port) return;
+    uint32_t shift = 2u * CAN_PIN_NUMBER(pin);
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    port->MODER = (port->MODER & ~(3u << shift)) | ((output ? 1u : 0u) << shift);     // 01 output, 00 input
+    __set_PRIMASK(primask);
+}
+
 #endif

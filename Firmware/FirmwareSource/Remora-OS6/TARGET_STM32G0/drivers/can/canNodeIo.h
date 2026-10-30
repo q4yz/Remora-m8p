@@ -17,5 +17,6 @@ void canIoConfigure(uint8_t pin, bool output, uint8_t modifier, bool level);
 void canIoRelease(uint8_t pin);             // back to the reset state (analog, high impedance)
 void canIoWrite(uint8_t pin, bool level);
 bool canIoRead(uint8_t pin);
+void canIoSetOutput(uint8_t pin, bool output);  // direction only, level and pull stay: half duplex UART, interrupt safe
 
 #endif

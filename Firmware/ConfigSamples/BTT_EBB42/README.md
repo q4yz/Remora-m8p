@@ -3,10 +3,11 @@
 Expansion board for the Manta M8P hub, see
 `FirmwareSource/Remora-OS6/TARGET_STM32G0/drivers/can/CAN_PROTOCOL.md`.
 
-**State: phase 2 + joints.** The node joins the bus, gets its node number and
-its modules from the hub. Supported on the node so far: Digital Pin (inputs and
-outputs) and Stepgen (a LinuxCNC joint, e.g. the extruder motor). Heater,
-thermistor, fans and the TMC2209 UART follow in the next phases.
+**State: phase 2 + joints + TMC2209.** The node joins the bus, gets its node
+number and its modules from the hub. Supported on the node so far: Digital Pin
+(inputs and outputs), Stepgen (a LinuxCNC joint, e.g. the extruder motor) and
+TMC2209 (its driver over the UART). Heater, thermistor and fans follow in the
+next phases.
 
 ## Board facts
 
@@ -106,7 +107,10 @@ joint 3, same keys as a Stepgen on the M8P:
 ```json
 "Modules": [
   { "Type": "Stepgen", "Comment": "extruder", "Joint Number": 3,
-    "Step Pin": "PD_0", "Direction Pin": "PD_1", "Enable Pin": "PD_2" } ]
+    "Step Pin": "PD_0", "Direction Pin": "PD_1", "Enable Pin": "PD_2" },
+  { "Type": "TMC2209", "Comment": "extruder driver", "RX pin": "PA_15",
+    "RSense": 0.11, "Address": 0, "Current": 650, "Microsteps": 16,
+    "Stealth chop": "off", "Stall sensitivity": 0 } ]
 ```
 
 The joint number must not be used by a Stepgen of the M8P. In HAL it is
@@ -115,9 +119,20 @@ to 20 kHz; the feedback reaches LinuxCNC about 1 ms later than for a local
 joint, so allow for a little more following error at speed. Without commands
 from the hub for 10 ms the motor stops and the driver is disabled.
 
-The TMC2209 UART (PA15) is not supported yet: the driver runs on its
-power-on defaults (microsteps from its MS pins, current from VREF), check the
-scale (steps per mm) with a test move.
+The TMC2209 module sets current (mA RMS), microsteps and StealthChop /
+SpreadCycle over the UART on PA15, same keys as the local TMC2209 module
+(RSense 0.11 on the EBB42). The node configures the driver right after its
+configuration and again whenever the driver lost its motor power. The M8P
+console shows the result in the boot summary:
+
+```
+  node 1  8e85cfce1e6c  toolhead   mandatory online, configured, 2 module(s), joint(s) 3
+           TMC2209 PA_15 ok, version 0x21
+```
+
+`NOT answering`: no motor power (24 V) or a wrong pin / address; the node
+keeps trying every second. Without the TMC2209 module the driver runs on its
+power-on defaults (microsteps from its MS pins, current from VREF).
 
 ## E-stop when the node is missing
 

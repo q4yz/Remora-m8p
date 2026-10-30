@@ -9,7 +9,7 @@
     11-bit identifiers with the node number in the low bits, CANopen style:
 
         0x080           SYNC            hub  -> all     reserved
-        0x080 + node    EMCY            node -> hub     fault report (phase 5)
+        0x080 + node    EMCY            node -> hub     status / fault report, e.g. TMC driver
         0x100 + node    JOINT           hub  -> node    step generator commands, every servo period
         0x180 + node    JOINT FEEDBACK  node -> hub     step counts, answer to every JOINT
         0x200 + node    COMMAND         hub  -> node    process data (phase 3/4)
@@ -28,7 +28,7 @@
 
 #include <stdint.h>
 
-#define CAN_PROTOCOL_VERSION    3           // 2: configuration transfer and digital I/O, 3: joints
+#define CAN_PROTOCOL_VERSION    4           // 2: configuration transfer and digital I/O, 3: joints, 4: TMC2209
 
 #define CAN_NODE_MAX            15          // node numbers 1 ... 15
 
@@ -79,6 +79,7 @@
 #define CFG_ERR_CHECKSUM        7           // END: count or checksum does not match
 #define CFG_ERR_BIT             8           // local data bit out of range or used twice
 #define CFG_ERR_JOINT           9           // local joint out of range or used twice
+#define CFG_ERR_VALUE           10          // module setting out of range (e.g. TMC2209 microsteps)
 
 #define CAN_MODULES_MAX         16          // modules per node
 #define CAN_CONFIG_REPLY_MS     50          // hub: resend a config frame without reply after this
@@ -88,6 +89,20 @@
 // module types, a module record is type + 5 data bytes
 #define MODULE_DIGITAL_PIN      0x01        // data: pin, flags (DPIN_*), local data bit, 0, 0
 #define MODULE_STEPGEN          0x02        // data: step pin, 0, local joint, direction pin, enable pin
+#define MODULE_TMC2209          0x03        // data: UART pin, TMC_* flags, current / 10 mA, Rsense mOhm, stall threshold
+
+// TMC2209 flags: bits 0-1 UART address, bit 2 StealthChop, bits 4-7 microsteps as power of 2 (0 ... 8)
+#define TMC_ADDR_MASK           0x03
+#define TMC_STEALTH             0x04
+#define TMC_MSTEP_SHIFT         4
+#define CAN_NODE_TMC            2           // TMC2209 drivers per node
+#define TMC_CURRENT_MAX         2000        // mA RMS
+
+// EMCY node -> hub: byte 0 EMCY_*, then
+//   EMCY_TMC   byte 1 module index (0 ...), 2 status (TMC_STATUS_* in NodeTmc2209.h),
+//              3 driver version (0x21), on a change and every CAN_EMCY_REPEAT_MS
+#define EMCY_TMC                0x01
+#define CAN_EMCY_REPEAT_MS      1000
 
 #define CAN_PIN_NONE            0xFF        // e.g. a stepgen without enable pin
 
@@ -256,6 +271,7 @@ static inline const char* canConfigError(uint8_t status)
         case CFG_ERR_CHECKSUM:  return "checksum error";
         case CFG_ERR_BIT:       return "data bit out of range or used twice";
         case CFG_ERR_JOINT:     return "joint out of range or used twice";
+        case CFG_ERR_VALUE:     return "setting out of range";
     }
     return "?";
 }

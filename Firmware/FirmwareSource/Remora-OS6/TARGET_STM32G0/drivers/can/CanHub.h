@@ -16,6 +16,8 @@
     joints   "Stepgen" modules on nodes: the LinuxCNC frequency commands go
              out in a JOINT frame right after each SPI WRITE, the step counts
              come back in JOINT FEEDBACK and go into the joint feedback
+    TMC2209  "TMC2209" modules on nodes: the node configures the driver over
+             its UART, the hub prints the status the node reports (EMCY)
 
         "CAN": { "Bitrate": 1000000,
                  "Nodes": [ { "UUID": "0e0d81e4210c", "Node": 1, "Comment": "toolhead",
@@ -79,6 +81,12 @@ typedef struct
     bool     jointPending;      // new LinuxCNC commands not sent yet (TX queue full)
     uint32_t lastJoint;         // ms, last JOINT frame
     uint32_t jointFeedbacks;    // JOINT FEEDBACK frames received (debug)
+
+    // TMC2209 modules: status and version from EMCY, by module index
+    uint8_t  tmcStatus[CAN_MODULES_MAX];
+    uint8_t  tmcVersion[CAN_MODULES_MAX];
+    uint16_t tmcReport;         // modules whose status changed, waiting to be printed
+    uint8_t  tmcCount;
 } canNodeEntry_t;
 
 #define CAN_HUB_JOINTS          8           // LinuxCNC joints (JOINTS in configuration.h)
@@ -136,6 +144,8 @@ class CanHub
         void handleConfigReply(const canFrame_t& frame, uint32_t now);
         void handleStatus(const canFrame_t& frame);
         void handleJointFeedback(const canFrame_t& frame);
+        void handleEmcy(const canFrame_t& frame);
+        void printTmc(const canNodeEntry_t* n, int module);
         bool sendJoint(canNodeEntry_t* n, const volatile int32_t* freq, uint8_t enable, bool safe);
         void sendConfigStep(canNodeEntry_t* n, uint32_t now);
         void serviceConfig(canNodeEntry_t* n, uint32_t now);
@@ -170,6 +180,12 @@ class CanHub
 
         // a "Stepgen" module of a node; enablePin "" or nullptr: none
         bool addStepgen(int node, int joint, const char* stepPin, const char* dirPin, const char* enablePin);
+
+        // a "TMC2209" module of a node, keys as the local module: rsense in Ohm, current in mA (RMS),
+        // microsteps 1 ... 256, stall: StallGuard threshold (SGTHRS), 0 off
+        bool addTmc2209(int node, const char* pin, float rsense, int address, int current, int microsteps,
+                        bool stealth, int stall);
+        uint8_t getTmcStatus(int node, int driver);     // TMC_STATUS_* of the node's driver-th TMC2209 (test)
 
         // outputs: rxData.outputs; safe: LinuxCNC gone, node outputs to their safe state
         void service(uint32_t now, bool quiet, bool safe = true, uint16_t outputs = 0);

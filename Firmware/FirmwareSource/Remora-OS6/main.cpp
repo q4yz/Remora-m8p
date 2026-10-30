@@ -411,6 +411,12 @@ void configCan()
                 canHub->addStepgen(number, m["Joint Number"] | -1, m["Step Pin"] | "", m["Direction Pin"] | "",
                                    m["Enable Pin"] | "");
             }
+            else if (!strcmp(type, "TMC2209"))
+            {
+                canHub->addTmc2209(number, m["RX pin"] | "", m["RSense"] | 0.11f, m["Address"] | 0, m["Current"] | 0,
+                                   m["Microsteps"] | 0, !strcmp(m["Stealth chop"] | "off", "on"),
+                                   m["Stall sensitivity"] | 0);
+            }
             else
             {
                 printf("CAN: node %d: module type '%s' is not supported on nodes yet\n", number, type);
