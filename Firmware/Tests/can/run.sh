@@ -12,7 +12,8 @@ r=0
 for s in uuid assign two-nodes unknown lost node-reboot bad-config \
          pins config-io hub-lost node-reboot-config rejected bit-conflict lossy \
          mandatory no-status-bit joint joint-reverse joint-hub-lost joint-config \
-         joint-reboot tmc tmc-reset tmc-no-power tmc-write-lost tmc-config; do "$B"/test $s || r=1; done
+         joint-reboot tmc tmc-reset tmc-no-power tmc-write-lost tmc-config \
+         thermistor thermistor-lost thermistor-config; do "$B"/test $s || r=1; done
 rm -rf "$B"
 echo "ALL: $([ $r = 0 ] && echo PASSED || echo FAILED)"
 exit $r

@@ -17,7 +17,7 @@ void canIoConfigure(uint8_t pin, bool output, uint8_t modifier, bool level)
     simIo->configures++;
 }
 
-void canIoRelease(uint8_t pin) { simIo->configured[pin] = false; simIo->output[pin] = false; }
+void canIoRelease(uint8_t pin) { simIo->configured[pin] = false; simIo->output[pin] = false; simIo->analogOn[pin] = false; }
 void canIoWrite(uint8_t pin, bool level)
 {
     if (!simIo->configured[pin]) return;
@@ -27,6 +27,11 @@ void canIoWrite(uint8_t pin, bool level)
     simIo->level[pin] = level;
 }
 bool canIoRead(uint8_t pin) { return simIo->level[pin]; }
+/* ADC on PA_0 ... PA_7 */
+bool canIoAnalogCapable(uint8_t pin) { return CAN_PIN_PORT(pin) == 0 && CAN_PIN_NUMBER(pin) <= 7; }
+void canIoAnalogConfigure(uint8_t pin) { simIo->configured[pin] = true; simIo->output[pin] = false; simIo->analogOn[pin] = true; }
+uint16_t canIoAnalogRead(uint8_t pin) { return simIo->analogOn[pin] ? simIo->analog[pin] : 0; }
+
 void canIoSetOutput(uint8_t pin, bool output)
 {
     if (!simIo->configured[pin]) return;

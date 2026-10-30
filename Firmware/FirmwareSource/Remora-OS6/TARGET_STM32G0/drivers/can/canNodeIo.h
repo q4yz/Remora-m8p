@@ -19,4 +19,8 @@ void canIoWrite(uint8_t pin, bool level);
 bool canIoRead(uint8_t pin);
 void canIoSetOutput(uint8_t pin, bool output);  // direction only, level and pull stay: half duplex UART, interrupt safe
 
+bool canIoAnalogCapable(uint8_t pin);       // the pin has an ADC input
+void canIoAnalogConfigure(uint8_t pin);
+uint16_t canIoAnalogRead(uint8_t pin);      // 0 ... 65535, main loop only (a conversion takes a few us)
+
 #endif

@@ -354,11 +354,13 @@ void configCan()
 
     // data bits of the hub's own Digital Pin modules and joints of its Stepgen modules, the nodes must not use them
     uint16_t localOutputs = 0, localInputs = 0;
-    uint8_t localJoints = 0;
+    uint8_t localJoints = 0, localVariables = 0;
     JsonArray local = doc["Modules"];
     for (JsonArray::iterator it = local.begin(); it != local.end(); ++it)
     {
         JsonObject m = *it;
+        int pv = m["PV[i]"] | -1;
+        if (pv >= 0 && pv < VARIABLES) localVariables |= (uint8_t)(1u << pv);
         if (!strcmp(m["Type"] | "", "Stepgen"))
         {
             int joint = m["Joint Number"] | -1;
@@ -373,6 +375,7 @@ void configCan()
     }
     canHub->reserveBits(localOutputs, localInputs);
     canHub->reserveJoints(localJoints);
+    canHub->reserveVariables(localVariables);
 
     // LinuxCNC input bit: 1 while all mandatory nodes run, goes into the E-stop chain in HAL
     if (cfg.containsKey("Status Bit")) canHub->setStatusBit(cfg["Status Bit"] | -1);
@@ -410,6 +413,12 @@ void configCan()
             {
                 canHub->addStepgen(number, m["Joint Number"] | -1, m["Step Pin"] | "", m["Direction Pin"] | "",
                                    m["Enable Pin"] | "");
+            }
+            else if (!strcmp(type, "Temperature") && !strcmp(m["Sensor"] | "", "Thermistor"))
+            {
+                JsonObject t = m["Thermistor"];
+                canHub->addThermistor(number, t["Pin"] | "", m["PV[i]"] | -1, t["beta"] | 0.0f, t["r0"] | 0.0f,
+                                      t["t0"] | 25.0f, t["Pullup"] | 4700.0f);
             }
             else if (!strcmp(type, "TMC2209"))
             {
@@ -871,6 +880,8 @@ int main()
         canHub->serviceJoints(HAL_GetTick(), fresh, commsLost, rxData.jointFreqCmd, rxData.jointEnable,
                               txData.jointFeedback);
     }
+    // node temperatures into the process variables
+    if (canHub) canHub->writeVariables(txData.processVariable);
 #endif
 
     //ThisThread::sleep_for(LOOP_TIME);

@@ -20,6 +20,7 @@
              firmware from a timer interrupt at CAN_NODE_BASE_FREQ
     TMC2209  drivers configured over their UART (NodeTmc2209, bit-banged in
              baseTick), status to the hub in EMCY
+    analog   ADC inputs (thermistors), averaged, raw to the hub in ANALOG
 ************************************************************************/
 
 #define NODE_STEPBIT            22          // DDS accumulator bit that makes a step, as the Remora stepgen
@@ -30,7 +31,7 @@ typedef struct
     uint8_t  type;              // MODULE_*
     uint8_t  pin;               // CAN_PIN; stepgen: step pin; TMC2209: UART pin
     uint8_t  flags;             // DPIN_*; TMC2209: TMC_*
-    uint8_t  bit;               // local data bit; stepgen: local joint; TMC2209: current / 10 mA
+    uint8_t  bit;               // local data bit; stepgen: local joint; TMC2209: current / 10 mA; analog: local index
     uint8_t  dirPin;            // stepgen: direction pin; TMC2209: Rsense mOhm
     uint8_t  enablePin;         // stepgen: enable pin (active low), CAN_PIN_NONE: none; TMC2209: stall threshold
 } canNodeModule_t;
@@ -93,6 +94,15 @@ class CanNode
         uint8_t     tmcModule[CAN_NODE_TMC];
         uint32_t    lastEmcy[CAN_NODE_TMC];
 
+        // analog inputs, local index i on analogPin[i]
+        uint8_t     analogCount;    // local inputs 0 ... analogCount - 1 in ANALOG
+        uint8_t     analogPin[CAN_NODE_ANALOG];
+        uint32_t    analogSum[CAN_NODE_ANALOG];
+        uint16_t    analogValue[CAN_NODE_ANALOG];   // last average sent
+        uint16_t    analogSamples;
+        uint32_t    lastAnalogSample;
+        uint32_t    lastAnalog;
+
         bool sendLssReply(void);
         void sendHeartbeat(void);
         void sendConfigReply(uint8_t cmd, uint8_t index, uint8_t status, uint8_t detail);
@@ -104,6 +114,7 @@ class CanNode
         void sendJointFeedback(uint8_t seq);
         bool sendTmcStatus(int i);
         void serviceTmc(void);
+        void serviceAnalog(void);
         void setJointEnable(canNodeJoint_t& j, bool enabled);
         void stopJoints(void);
         uint8_t checkModule(const canFrame_t& frame, canNodeModule_t& m);
@@ -133,6 +144,9 @@ class CanNode
         uint32_t getJointFrames(void) { return this->jointFrames; }
         uint8_t getTmcCount(void) { return this->tmcCount; }
         NodeTmc2209& getTmc(int i) { return this->tmc[i]; }
+        uint8_t getAnalogCount(void) { return this->analogCount; }
+        uint8_t getAnalogPin(int i) { return this->analogPin[i]; }
+        uint16_t getAnalogValue(int i) { return this->analogValue[i]; }
 };
 
 #endif

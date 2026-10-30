@@ -5,6 +5,9 @@
 
 #include "stm32g0xx_hal.h"
 #include "canProtocol.h"
+#include "hal/analogin_api.h"
+#include "hal/pinmap.h"
+#include "PeripheralPins.h"
 
 static GPIO_TypeDef* portOf(uint8_t pin)
 {
@@ -99,6 +102,45 @@ void canIoSetOutput(uint8_t pin, bool output)
     __disable_irq();
     port->MODER = (port->MODER & ~(3u << shift)) | ((output ? 1u : 0u) << shift);     // 01 output, 00 input
     __set_PRIMASK(primask);
+}
+
+
+// the pin byte is the STM32 PinName (port << 4 | number)
+#define ANALOG_PINS 4                       // CAN_NODE_ANALOG
+static analogin_t analogIn[ANALOG_PINS];
+static uint8_t analogPin[ANALOG_PINS];
+static int analogUsed = 0;
+
+bool canIoAnalogCapable(uint8_t pin)
+{
+    return canIoPinExists(pin) && pinmap_find_peripheral((PinName)pin, PinMap_ADC) != (uint32_t)NC;
+}
+
+
+static analogin_t* analogOf(uint8_t pin)
+{
+    for (int i = 0; i < analogUsed; i++) if (analogPin[i] == pin) return &analogIn[i];
+    return nullptr;
+}
+
+
+void canIoAnalogConfigure(uint8_t pin)
+{
+    analogin_t* a = analogOf(pin);
+    if (!a)
+    {
+        if (analogUsed >= ANALOG_PINS) return;
+        analogPin[analogUsed] = pin;
+        a = &analogIn[analogUsed++];
+    }
+    analogin_init(a, (PinName)pin);
+}
+
+
+uint16_t canIoAnalogRead(uint8_t pin)
+{
+    analogin_t* a = analogOf(pin);
+    return a ? analogin_read_u16(a) : 0;
 }
 
 #endif

@@ -18,6 +18,9 @@
              come back in JOINT FEEDBACK and go into the joint feedback
     TMC2209  "TMC2209" modules on nodes: the node configures the driver over
              its UART, the hub prints the status the node reports (EMCY)
+    temp     "Temperature" (thermistor) modules on nodes: the node sends its
+             ADC readings (ANALOG), the hub turns them into the temperature,
+             same Beta formula as the local module, into the process variable
 
         "CAN": { "Bitrate": 1000000,
                  "Nodes": [ { "UUID": "0e0d81e4210c", "Node": 1, "Comment": "toolhead",
@@ -87,7 +90,21 @@ typedef struct
     uint8_t  tmcVersion[CAN_MODULES_MAX];
     uint16_t tmcReport;         // modules whose status changed, waiting to be printed
     uint8_t  tmcCount;
+
+    // thermistors: node local analog input i is LinuxCNC process variable analogPv[i]
+    uint8_t  analogPv[CAN_NODE_ANALOG];
+    uint8_t  analogCount;
+    float    thermBeta[CAN_NODE_ANALOG];
+    float    thermR0[CAN_NODE_ANALOG];
+    float    thermT0[CAN_NODE_ANALOG];
+    float    thermPullup[CAN_NODE_ANALOG];
+    uint16_t analogRaw[CAN_NODE_ANALOG];
+    float    temperature[CAN_NODE_ANALOG];  // from the last ANALOG frame
+    bool     analogValid;       // an ANALOG frame since the configuration
 } canNodeEntry_t;
+
+#define CAN_HUB_VARIABLES       6           // LinuxCNC process variables (VARIABLES in configuration.h)
+#define CAN_TEMP_ERROR          999.0f      // sensor error or node lost, as the local Temperature module
 
 #define CAN_HUB_JOINTS          8           // LinuxCNC joints (JOINTS in configuration.h)
 
@@ -136,6 +153,7 @@ class CanHub
         uint16_t        usedOutputs;        // LinuxCNC data bits already taken (local pins and nodes)
         uint16_t        usedInputs;
         uint8_t         usedJoints;         // LinuxCNC joints already taken (local stepgens and nodes)
+        uint8_t         usedVariables;      // LinuxCNC process variables already taken
 
         canNodeEntry_t* findNode(uint8_t node);
         bool pinUsed(const canNodeEntry_t* n, uint8_t pin);
@@ -145,6 +163,7 @@ class CanHub
         void handleStatus(const canFrame_t& frame);
         void handleJointFeedback(const canFrame_t& frame);
         void handleEmcy(const canFrame_t& frame);
+        void handleAnalog(const canFrame_t& frame);
         void printTmc(const canNodeEntry_t* n, int module);
         bool sendJoint(canNodeEntry_t* n, const volatile int32_t* freq, uint8_t enable, bool safe);
         void sendConfigStep(canNodeEntry_t* n, uint32_t now);
@@ -186,6 +205,17 @@ class CanHub
         bool addTmc2209(int node, const char* pin, float rsense, int address, int current, int microsteps,
                         bool stealth, int stall);
         uint8_t getTmcStatus(int node, int driver);     // TMC_STATUS_* of the node's driver-th TMC2209 (test)
+
+        // LinuxCNC process variables of the hub's own modules ("PV[i]"), call before addThermistor
+        void reserveVariables(uint8_t variables);
+
+        // a "Temperature" module with a thermistor on a node: Beta formula, pullup to the ADC
+        // reference in Ohm (4700 as the local module); pv: LinuxCNC process variable ("PV[i]")
+        bool addThermistor(int node, const char* pin, int pv, float beta, float r0, float t0, float pullup);
+
+        // writes the node temperatures into txData.processVariable, main loop; CAN_TEMP_ERROR
+        // while a node is lost or not configured, or its sensor is open / shorted
+        void writeVariables(volatile float* processVariable);
 
         // outputs: rxData.outputs; safe: LinuxCNC gone, node outputs to their safe state
         void service(uint32_t now, bool quiet, bool safe = true, uint16_t outputs = 0);

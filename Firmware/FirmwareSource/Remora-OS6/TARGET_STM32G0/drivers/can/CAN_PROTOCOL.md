@@ -20,6 +20,7 @@ could disturb the base thread).
 | `0x180 + n` | JOINT FEEDBACK (step counts) | node → hub | joints |
 | `0x200 + n` | COMMAND (process data) | hub → node | 3/4 |
 | `0x280 + n` | STATUS (process data) | node → hub | 3/4 |
+| `0x380 + n` | ANALOG (ADC readings) | node → hub | temperature |
 | `0x580 + n` | CONFIG REPLY | node → hub | 2 |
 | `0x600 + n` | CONFIG | hub → node | 2 |
 | `0x700 + n` | HEARTBEAT | node → hub | 1 |
@@ -109,6 +110,7 @@ Module types (pins as `port << 4 | number`, port 0 = A, `0xFF` none):
 - `0x03` TMC2209, data: UART pin, flags (bits 0-1 address, bit 2
   StealthChop, bits 4-7 microsteps as power of 2), current / 10 mA, Rsense
   mOhm, stall threshold (SGTHRS). Up to 2 per node, one per UART pin.
+- `0x04` analog input, data: ADC pin, 0, node local analog index (0 ... 3).
 
 ## Process data (phase 3)
 
@@ -218,9 +220,35 @@ EMCY `0x080 + n`, node → hub: byte 0 `0x01` (TMC), 1 module index, 2 status
 version (`0x21`); on a change and every second. The hub prints it in the boot
 summary and on changes. A driver that does not answer does not stop the node.
 
+## Temperatures (thermistors)
+
+A `"Temperature"` module in a node entry, same keys as the local module, plus
+an optional `"Pullup"` (Ohm, default 4700 as the local module):
+
+```json
+{ "Type": "Temperature", "Comment": "hotend", "PV[i]": 2, "Sensor": "Thermistor",
+  "Thermistor": { "Pin": "PA_3", "beta": 3950, "r0": 100000, "t0": 25 } }
+```
+
+The PV must not be used by a module of the hub (any `"PV[i]"`) or another
+node; up to 4 per node. LinuxCNC sees it as a local one: `remora.PV.2`.
+
+- The node reads the ADC every 10 ms and sends the average every 100 ms raw in
+  ANALOG `0x380 + n`: per local input 2 bytes, 0 ... 65535, little endian.
+- The hub turns it into °C with the formula of the local module (Beta, the
+  thermistor between the ADC pin and ground, the pullup to the reference) and
+  writes it into the process variable.
+- 999 (as the local module's sensor error) while the node is lost or not
+  configured, and with an open (ADC 65535) or shorted (ADC 0) sensor, or a
+  result ≤ 0 °C. The heater PID in LinuxCNC then turns the heater off.
+
+The heater is a `"Digital Pin"` output on the node (e.g. PB13 on the EBB42),
+driven from HAL; it goes off when the node loses the hub or LinuxCNC (safe
+state low).
+
 ## Next phases
 
-3. **Remote modules**: temperature, heater, fans via SP / PV indices; the
-   hotend fan rule runs locally on the node.
+3. **Remote modules**: PWM outputs (heater, fans) via SP indices; the hotend
+   fan rule runs locally on the node.
 5. **Safety**: node faults (e.g. TMC2209 not answering) and status bits to
    LinuxCNC in the 2 spare bytes of the SPI frame.

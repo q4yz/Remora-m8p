@@ -14,6 +14,7 @@
         0x180 + node    JOINT FEEDBACK  node -> hub     step counts, answer to every JOINT
         0x200 + node    COMMAND         hub  -> node    process data (phase 3/4)
         0x280 + node    STATUS          node -> hub     process data (phase 3/4)
+        0x380 + node    ANALOG          node -> hub     ADC readings (thermistors), every 100 ms
         0x580 + node    CONFIG REPLY    node -> hub     configuration transfer (phase 2)
         0x600 + node    CONFIG          hub  -> node    configuration transfer (phase 2)
         0x700 + node    HEARTBEAT       node -> hub     node alive, state
@@ -28,7 +29,7 @@
 
 #include <stdint.h>
 
-#define CAN_PROTOCOL_VERSION    4           // 2: configuration transfer and digital I/O, 3: joints, 4: TMC2209
+#define CAN_PROTOCOL_VERSION    5           // 2: configuration and digital I/O, 3: joints, 4: TMC2209, 5: analog
 
 #define CAN_NODE_MAX            15          // node numbers 1 ... 15
 
@@ -39,6 +40,7 @@
 #define CAN_ID_JOINT_FEEDBACK   0x180       // + node
 #define CAN_ID_COMMAND          0x200       // + node
 #define CAN_ID_STATUS           0x280       // + node
+#define CAN_ID_ANALOG           0x380       // + node
 #define CAN_ID_CONFIG_REPLY     0x580       // + node
 #define CAN_ID_CONFIG           0x600       // + node
 #define CAN_ID_HEARTBEAT        0x700       // + node
@@ -80,6 +82,7 @@
 #define CFG_ERR_BIT             8           // local data bit out of range or used twice
 #define CFG_ERR_JOINT           9           // local joint out of range or used twice
 #define CFG_ERR_VALUE           10          // module setting out of range (e.g. TMC2209 microsteps)
+#define CFG_ERR_NOT_ANALOG      11          // analog input on a pin without ADC
 
 #define CAN_MODULES_MAX         16          // modules per node
 #define CAN_CONFIG_REPLY_MS     50          // hub: resend a config frame without reply after this
@@ -90,6 +93,13 @@
 #define MODULE_DIGITAL_PIN      0x01        // data: pin, flags (DPIN_*), local data bit, 0, 0
 #define MODULE_STEPGEN          0x02        // data: step pin, 0, local joint, direction pin, enable pin
 #define MODULE_TMC2209          0x03        // data: UART pin, TMC_* flags, current / 10 mA, Rsense mOhm, stall threshold
+#define MODULE_ANALOG_IN        0x04        // data: ADC pin, 0, local analog index, 0, 0
+
+// analog inputs: the node averages its ADC readings and sends them raw in ANALOG, byte 2i / 2i + 1
+// local input i, 0 ... 65535, little endian; the hub turns them into temperatures (thermistor)
+#define CAN_NODE_ANALOG         4           // analog inputs per node, fits one 8 byte frame
+#define CAN_ANALOG_SAMPLE_MS    10          // node: ADC reading period
+#define CAN_ANALOG_MS           100         // node: ANALOG period, the average of the readings
 
 // TMC2209 flags: bits 0-1 UART address, bit 2 StealthChop, bits 4-7 microsteps as power of 2 (0 ... 8)
 #define TMC_ADDR_MASK           0x03
@@ -272,6 +282,7 @@ static inline const char* canConfigError(uint8_t status)
         case CFG_ERR_BIT:       return "data bit out of range or used twice";
         case CFG_ERR_JOINT:     return "joint out of range or used twice";
         case CFG_ERR_VALUE:     return "setting out of range";
+        case CFG_ERR_NOT_ANALOG: return "pin has no ADC input";
     }
     return "?";
 }

@@ -25,7 +25,11 @@ CanNode::CanNode(RemoraCAN* can, uint32_t baseFreq) :
     lastJoint(0),
     jointsStopped(false),
     jointFrames(0),
-    tmcCount(0)
+    tmcCount(0),
+    analogCount(0),
+    analogSamples(0),
+    lastAnalogSample(0),
+    lastAnalog(0)
 {
     memset(this->joints, 0, sizeof(this->joints));
     // as the Remora stepgen: no floating point in the interrupt (the Cortex-M0+ has no FPU)
@@ -180,6 +184,11 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
         for (int i = 0; i < this->pendingCount; i++) if (this->pending[i].type == MODULE_TMC2209) drivers++;
         if (drivers >= CAN_NODE_TMC) return CFG_ERR_FULL;
     }
+    else if (m.type == MODULE_ANALOG_IN)
+    {
+        if (m.bit >= CAN_NODE_ANALOG) return CFG_ERR_VALUE;
+        if (canIoPinExists(m.pin) && !canIoPinReserved(m.pin) && !canIoAnalogCapable(m.pin)) return CFG_ERR_NOT_ANALOG;
+    }
     else return CFG_ERR_TYPE;
 
     uint8_t pins[3], used[3];
@@ -202,6 +211,7 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
         }
         if (p.type != m.type || p.bit != m.bit || m.type == MODULE_TMC2209) continue;
         if (m.type == MODULE_STEPGEN) return CFG_ERR_JOINT;
+        if (m.type == MODULE_ANALOG_IN) return CFG_ERR_VALUE;
         if ((p.flags & DPIN_OUTPUT) == (m.flags & DPIN_OUTPUT)) return CFG_ERR_BIT;
     }
     return CFG_OK;
@@ -273,6 +283,10 @@ void CanNode::handleConfig(const canFrame_t& frame)
                        canPinName(m.pin, name), canPinName(m.dirPin, dir),
                        m.enablePin == CAN_PIN_NONE ? "none" : canPinName(m.enablePin, enable));
             }
+            else if (m.type == MODULE_ANALOG_IN)
+            {
+                printf("CONFIG: module %d: analog input %d, %s\n", c.index + 1, m.bit, canPinName(m.pin, name));
+            }
             else if (m.type == MODULE_TMC2209)
             {
                 printf("CONFIG: module %d: TMC2209 UART %s, address %d, %d mA, %d microsteps, %s, stall %d\n",
@@ -327,9 +341,18 @@ void CanNode::applyConfig()
     this->safe = true;
     this->outputs = 0;
     this->jointCount = 0;
+    this->analogCount = 0;
     for (int i = 0; i < this->moduleCount; i++)
     {
         const canNodeModule_t& m = this->modules[i];
+        if (m.type == MODULE_ANALOG_IN)
+        {
+            canIoAnalogConfigure(m.pin);
+            this->analogPin[m.bit] = m.pin;
+            this->analogValue[m.bit] = 0;
+            if (m.bit + 1 > this->analogCount) this->analogCount = (uint8_t)(m.bit + 1);
+            continue;
+        }
         if (m.type == MODULE_STEPGEN)
         {
             canIoConfigure(m.pin, true, DPIN_MOD_NONE, false);
@@ -373,6 +396,10 @@ void CanNode::applyConfig()
     this->jointsStopped = false;
     this->commandCount = 0;
     this->jointFrames = 0;
+    memset(this->analogSum, 0, sizeof(this->analogSum));
+    this->analogSamples = 0;
+    this->lastAnalogSample = this->now;
+    this->lastAnalog = this->now;
     this->sendStatus(this->readInputs());
 }
 
@@ -387,6 +414,7 @@ void CanNode::releaseModules()
     this->jointCount = 0;
     for (int i = 0; i < this->tmcCount; i++) this->tmc[i].stop();
     this->tmcCount = 0;
+    this->analogCount = 0;
 
     uint8_t pins[3];
     for (int i = 0; i < this->moduleCount; i++)
@@ -571,6 +599,46 @@ void CanNode::serviceTmc()
 }
 
 
+/***********************************************************************
+    Analog inputs
+************************************************************************/
+
+void CanNode::serviceAnalog()
+{
+    if (!this->analogCount) return;
+
+    if ((this->now - this->lastAnalogSample) >= CAN_ANALOG_SAMPLE_MS)
+    {
+        this->lastAnalogSample = this->now;
+        for (int i = 0; i < this->analogCount; i++) this->analogSum[i] += canIoAnalogRead(this->analogPin[i]);
+        this->analogSamples++;
+    }
+
+    if ((this->now - this->lastAnalog) < CAN_ANALOG_MS || !this->analogSamples) return;
+
+    canFrame_t f;
+    f.id = CAN_ID_ANALOG + this->node;
+    f.extended = false;
+    f.len = (uint8_t)(2 * this->analogCount);
+    for (int i = 0; i < this->analogCount; i++)
+    {
+        uint16_t v = (uint16_t)(this->analogSum[i] / this->analogSamples);
+        f.data[2 * i] = (uint8_t)v;
+        f.data[2 * i + 1] = (uint8_t)(v >> 8);
+    }
+    // TX queue full: keep averaging, try again in the next ms
+    if (!this->can->send(f)) return;
+
+    for (int i = 0; i < this->analogCount; i++)
+    {
+        this->analogValue[i] = (uint16_t)(f.data[2 * i] | (f.data[2 * i + 1] << 8));
+        this->analogSum[i] = 0;
+    }
+    this->analogSamples = 0;
+    this->lastAnalog = this->now;
+}
+
+
 void CanNode::baseTick()
 {
     for (int i = 0; i < this->tmcCount; i++) this->tmc[i].tick();
@@ -660,6 +728,7 @@ void CanNode::service(uint32_t now)
         }
 
         this->serviceTmc();
+        this->serviceAnalog();
 
         // TX queue full (nobody acknowledges): try again in the next ms, not on every loop pass
         uint16_t in = this->readInputs();

@@ -2,6 +2,7 @@
 #include "NodeTmc2209.h"
 
 #include <string.h>
+#include <math.h>
 
 static int hexDigit(char c)
 {
@@ -41,7 +42,8 @@ CanHub::CanHub(RemoraCAN* can) :
     unknownNew(false),
     usedOutputs(0),
     usedInputs(0),
-    usedJoints(0)
+    usedJoints(0),
+    usedVariables(0)
 {
     memset(this->nodes, 0, sizeof(this->nodes));
     memset(this->unknown, 0, sizeof(this->unknown));
@@ -354,6 +356,119 @@ bool CanHub::addTmc2209(int node, const char* pinName, float rsense, int address
 }
 
 
+void CanHub::reserveVariables(uint8_t variables)
+{
+    this->usedVariables |= variables;
+}
+
+
+bool CanHub::addThermistor(int node, const char* pinName, int pv, float beta, float r0, float t0, float pullup)
+{
+    canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
+    uint8_t pin;
+    char name[6];
+
+    if (!n)
+    {
+        printf("CAN: module for node %d, which is not configured\n", node);
+        return false;
+    }
+    if (n->moduleCount >= CAN_MODULES_MAX)
+    {
+        printf("CAN: node %d: more than %d modules\n", node, CAN_MODULES_MAX);
+        return false;
+    }
+    if (n->analogCount >= CAN_NODE_ANALOG)
+    {
+        printf("CAN: node %d: more than %d temperature inputs\n", node, CAN_NODE_ANALOG);
+        return false;
+    }
+    if (!canParsePin(pinName, &pin))
+    {
+        printf("CAN: node %d: thermistor, invalid pin '%s'\n", node, pinName ? pinName : "");
+        return false;
+    }
+    if (this->pinUsed(n, pin))
+    {
+        printf("CAN: node %d: pin %s used twice\n", node, canPinName(pin, name));
+        return false;
+    }
+    if (pv < 0 || pv >= CAN_HUB_VARIABLES)
+    {
+        printf("CAN: node %d: thermistor %s, PV[i] %d out of range 0 ... %d\n", node, canPinName(pin, name), pv,
+               CAN_HUB_VARIABLES - 1);
+        return false;
+    }
+    if (this->usedVariables & (1u << pv))
+    {
+        printf("CAN: node %d: thermistor %s, PV[i] %d is already used\n", node, canPinName(pin, name), pv);
+        return false;
+    }
+    if (!(beta > 0.0f) || !(r0 > 0.0f) || !(pullup > 0.0f))
+    {
+        printf("CAN: node %d: thermistor %s, beta, r0 and the pullup must be > 0\n", node, canPinName(pin, name));
+        return false;
+    }
+
+    uint8_t local = n->analogCount++;
+    n->analogPv[local] = (uint8_t)pv;
+    n->thermBeta[local] = beta;
+    n->thermR0[local] = r0;
+    n->thermT0[local] = t0;
+    n->thermPullup[local] = pullup;
+    this->usedVariables |= (uint8_t)(1u << pv);
+
+    uint8_t* m = n->modules[n->moduleCount++];
+    m[0] = MODULE_ANALOG_IN;
+    m[1] = pin;
+    m[2] = 0;
+    m[3] = local;
+    m[4] = 0;
+    m[5] = 0;
+
+    printf("CAN: node %d module %d: thermistor %s, LinuxCNC PV[%d], beta %d, r0 %d, pullup %d\n", node, n->moduleCount,
+           canPinName(pin, name), pv, (int)beta, (int)r0, (int)pullup);
+    return true;
+}
+
+
+// the local Temperature module's formula (sensors/thermistor): ADC 0 ... 65535 over the pullup
+static float thermistorTemperature(uint16_t adc, float beta, float r0, float t0, float pullup)
+{
+    if (adc == 0 || adc == 0xFFFF) return CAN_TEMP_ERROR;                      // shorted / open
+    float r = pullup / ((65536.0f / adc) - 1.0f);
+    float t = (1.0f / ((1.0f / (t0 + 273.15f)) + (logf(r / r0) / beta))) - 273.15f;
+    return t > 0.0f ? t : CAN_TEMP_ERROR;                                       // as the local module: <= 0 is an error
+}
+
+
+void CanHub::handleAnalog(const canFrame_t& frame)
+{
+    canNodeEntry_t* n = this->findNode((uint8_t)(frame.id - CAN_ID_ANALOG));
+    if (!n || n->cfgState != CFG_STATE_DONE || frame.len < 2 * n->analogCount) return;
+
+    for (int i = 0; i < n->analogCount; i++)
+    {
+        uint16_t raw = (uint16_t)(frame.data[2 * i] | (frame.data[2 * i + 1] << 8));
+        n->analogRaw[i] = raw;
+        // here, a few times a second: logf costs the Cortex-M0+ (no FPU) too much for every loop pass
+        n->temperature[i] = thermistorTemperature(raw, n->thermBeta[i], n->thermR0[i], n->thermT0[i], n->thermPullup[i]);
+    }
+    n->analogValid = true;
+}
+
+
+void CanHub::writeVariables(volatile float* pv)
+{
+    for (int i = 0; i < this->nodeCount; i++)
+    {
+        const canNodeEntry_t* n = &this->nodes[i];
+        bool ok = n->alive && n->cfgState == CFG_STATE_DONE && n->analogValid;
+        for (int k = 0; k < n->analogCount; k++) pv[n->analogPv[k]] = ok ? n->temperature[k] : CAN_TEMP_ERROR;
+    }
+}
+
+
 uint8_t CanHub::getTmcStatus(int node, int driver)
 {
     canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
@@ -592,6 +707,7 @@ void CanHub::handleConfigReply(const canFrame_t& frame, uint32_t now)
         n->jointPending = true;
         // the node configures its TMC drivers now, it reports them
         for (int i = 0; i < n->moduleCount; i++) n->tmcStatus[i] = TMC_STATUS_NONE;
+        n->analogValid = false;             // temperatures from the next ANALOG frame
         return;
     }
 
@@ -791,6 +907,10 @@ void CanHub::service(uint32_t now, bool quiet, bool safe, uint16_t outputs)
         {
             this->handleEmcy(f);
         }
+        else if (f.id > CAN_ID_ANALOG && f.id <= CAN_ID_ANALOG + CAN_NODE_MAX)
+        {
+            this->handleAnalog(f);
+        }
         else if (f.id > CAN_ID_STATUS && f.id <= CAN_ID_STATUS + CAN_NODE_MAX)
         {
             this->handleStatus(f);
@@ -892,6 +1012,13 @@ void CanHub::bootReport()
                 printf("           ");
                 this->printTmc(n, k);
                 printf("\n");
+            }
+            for (int k = 0; k < n->analogCount; k++)
+            {
+                printf("           thermistor PV[%d]: ", n->analogPv[k]);
+                if (!n->analogValid) printf("no reading yet\n");
+                else if (n->temperature[k] == CAN_TEMP_ERROR) printf("SENSOR ERROR (open / shorted), ADC %u\n", n->analogRaw[k]);
+                else printf("%d.%d C, ADC %u\n", (int)n->temperature[k], (int)(n->temperature[k] * 10.0f) % 10, n->analogRaw[k]);
             }
         }
         else if (n->cfgState == CFG_STATE_FAILED)

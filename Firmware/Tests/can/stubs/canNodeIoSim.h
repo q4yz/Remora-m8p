@@ -10,6 +10,8 @@ struct SimIo
     uint8_t modifier[96] = {};
     int rises[96] = {};           /* low -> high edges written, e.g. step pulses */
     bool latch[96] = {};          /* output register: the level written, kept while the pin is an input */
+    uint16_t analog[96] = {};     /* ADC reading applied from outside, 0 ... 65535 */
+    bool analogOn[96] = {};
     int configures = 0;
 };
 

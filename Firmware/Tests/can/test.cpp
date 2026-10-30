@@ -2,6 +2,7 @@
 #include "CanNode.h"
 #include "canNodeIoSim.h"
 #include <string>
+#include <cmath>
 std::vector<RemoraCAN*> RemoraCAN::bus;
 uint32_t sim_uid[3];
 
@@ -80,6 +81,7 @@ static bool hubRuns = true;
 static int32_t simFreq[8];                 /* rxData.jointFreqCmd */
 static uint8_t simEnable = 0;              /* rxData.jointEnable */
 static int32_t simFeedback[8];             /* txData.jointFeedback */
+static float simPv[6];                     /* txData.processVariable */
 
 /* one LinuxCNC WRITE per ms, the node base thread at CAN_NODE_BASE_FREQ */
 static void run(CanHub& hub, std::vector<Node*> nodes, uint32_t& now, uint32_t ms, bool quiet = false) {
@@ -87,6 +89,7 @@ static void run(CanHub& hub, std::vector<Node*> nodes, uint32_t& now, uint32_t m
         if (hubRuns) {
             hub.service(now, quiet, simSafe, simOutputs);
             hub.serviceJoints(now, !simSafe, simSafe, simFreq, simEnable, simFeedback);
+            hub.writeVariables(simPv);
         }
         for (Node* n : nodes) {
             simIo = &n->io;
@@ -529,6 +532,68 @@ int main(int argc, char** argv) {
         CHECK(a.node->getTmc(0).getStatus() == TMC_STATUS_WRITE_FAILED);
         run(hub, {&a}, now, 1300);
         CHECK(a.node->getTmc(0).getStatus() == TMC_STATUS_OK && tmc.regs[0x00] == 0x1C0);
+    }
+    else if (sc == "thermistor") {
+        /* EBB42 hotend: 100k NTC, beta 3950, 4.7k pullup on PA_3, LinuxCNC PV[2] */
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        const uint8_t PA3 = CAN_PIN(0, 3);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addThermistor(1, "PA_3", 2, 3950.0f, 100000.0f, 25.0f, 4700.0f));
+        CHECK(hub.addDigitalPin(1, "PB_13", true, false, DPIN_MOD_NONE, false, false, 0));   /* heater */
+        a.io.analog[PA3] = (uint16_t)(65536.0 * 100000.0 / 104700.0);                       /* 25 C: r = r0 */
+        run(hub, {&a}, now, 300);
+        CHECK(simPv[2] == CAN_TEMP_ERROR);                                                  /* not configured yet */
+        run(hub, {&a}, now, 1500);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getAnalogCount() == 1 && a.io.analogOn[PA3]);
+        printf("  25 C: PV %.2f\n", simPv[2]);
+        CHECK(simPv[2] > 24.8f && simPv[2] < 25.2f);
+        double r = 100000.0 * exp(3950.0 * (1.0 / 473.15 - 1.0 / 298.15));                /* 200 C */
+        a.io.analog[PA3] = (uint16_t)(65536.0 * r / (r + 4700.0));
+        run(hub, {&a}, now, 250);                                                           /* averaged over 100 ms */
+        printf("  200 C: PV %.2f\n", simPv[2]);
+        CHECK(simPv[2] > 199.0f && simPv[2] < 201.0f);
+        a.io.analog[PA3] = 0xFFFF;                                                          /* sensor open */
+        run(hub, {&a}, now, 250);
+        CHECK(simPv[2] == CAN_TEMP_ERROR);
+        a.io.analog[PA3] = 0;                                                               /* shorted */
+        run(hub, {&a}, now, 250);
+        CHECK(simPv[2] == CAN_TEMP_ERROR);
+        CHECK(simPv[0] == 0.0f && simPv[1] == 0.0f);                                        /* other PVs untouched */
+    }
+    else if (sc == "thermistor-lost") {
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        const uint8_t PA3 = CAN_PIN(0, 3);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addThermistor(1, "PA_3", 2, 3950.0f, 100000.0f, 25.0f, 4700.0f));
+        a.io.analog[PA3] = (uint16_t)(65536.0 * 100000.0 / 104700.0);
+        run(hub, {&a}, now, 2000);
+        CHECK(simPv[2] > 24.8f && simPv[2] < 25.2f);
+        run(hub, {}, now, 400);                                                             /* node gone */
+        CHECK(simPv[2] == CAN_TEMP_ERROR);
+        run(hub, {&a}, now, 2000);                                                          /* back, configured again */
+        CHECK(simPv[2] > 24.8f && simPv[2] < 25.2f);
+    }
+    else if (sc == "thermistor-config") {
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode("0e0d81e4210c", 1, "");
+        hub.reserveVariables(1u << 0);                                                      /* the hub's own Temperature */
+        CHECK(!hub.addThermistor(1, "PA_3", 0, 3950.0f, 100000.0f, 25.0f, 4700.0f));        /* PV taken */
+        CHECK(!hub.addThermistor(1, "PA_3", 6, 3950.0f, 100000.0f, 25.0f, 4700.0f));        /* out of range */
+        CHECK(!hub.addThermistor(1, "PA_3", 1, 0.0f, 100000.0f, 25.0f, 4700.0f));           /* no beta */
+        CHECK(!hub.addThermistor(1, "XA_3", 1, 3950.0f, 100000.0f, 25.0f, 4700.0f));
+        CHECK(hub.addThermistor(1, "PA_3", 1, 3950.0f, 100000.0f, 25.0f, 4700.0f));
+        CHECK(!hub.addThermistor(1, "PA_4", 1, 3950.0f, 100000.0f, 25.0f, 4700.0f));        /* PV used twice */
+        CHECK(!hub.addThermistor(1, "PA_3", 2, 3950.0f, 100000.0f, 25.0f, 4700.0f));        /* pin used twice */
+        /* the node rejects a pin without ADC */
+        Node a(1, 2, 3);
+        RemoraCAN hc2; CanHub hub2(&hc2);
+        hub2.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub2.addThermistor(1, "PB_13", 2, 3950.0f, 100000.0f, 25.0f, 4700.0f));
+        run(hub2, {&a}, now, 3000);
+        CHECK(a.node->getState() == NODE_STATE_PREOP && hub2.runningMask() == 0);
+        CHECK(simPv[2] == CAN_TEMP_ERROR);
     }
     else if (sc == "tmc-config") {
         RemoraCAN hc; CanHub hub(&hc);

@@ -3,11 +3,11 @@
 Expansion board for the Manta M8P hub, see
 `FirmwareSource/Remora-OS6/TARGET_STM32G0/drivers/can/CAN_PROTOCOL.md`.
 
-**State: phase 2 + joints + TMC2209.** The node joins the bus, gets its node
-number and its modules from the hub. Supported on the node so far: Digital Pin
-(inputs and outputs), Stepgen (a LinuxCNC joint, e.g. the extruder motor) and
-TMC2209 (its driver over the UART). Heater, thermistor and fans follow in the
-next phases.
+**State: phase 2 + joints + TMC2209 + temperature.** The node joins the bus,
+gets its node number and its modules from the hub. Supported on the node so
+far: Digital Pin (inputs and outputs, e.g. the heater), Stepgen (a LinuxCNC
+joint, e.g. the extruder motor), TMC2209 (its driver over the UART) and
+Temperature (thermistor). PWM outputs (fans) follow in the next phases.
 
 ## Board facts
 
@@ -133,6 +133,31 @@ console shows the result in the boot summary:
 `NOT answering`: no motor power (24 V) or a wrong pin / address; the node
 keeps trying every second. Without the TMC2209 module the driver runs on its
 power-on defaults (microsteps from its MS pins, current from VREF).
+
+## Hotend: thermistor and heater
+
+Thermistor on PA3 (4.7k pullup on the EBB42) as LinuxCNC process variable 2,
+heater MOSFET on PB13 as LinuxCNC output bit 0, same keys as on the M8P:
+
+```json
+{ "Type": "Temperature", "Comment": "hotend", "PV[i]": 2, "Sensor": "Thermistor",
+  "Thermistor": { "Pin": "PA_3", "beta": 3950, "r0": 100000, "t0": 25 } },
+{ "Type": "Digital Pin", "Comment": "hotend heater", "Pin": "PB_13",
+  "Mode": "Output", "Data Bit": 0 }
+```
+
+The PV must not be used by a module of the M8P. In HAL the temperature is
+`remora.PV.2` like a local one, updated every 100 ms; 999 while the sensor is
+open / shorted or the node is lost (the heater PID turns the heater off). The
+boot summary on the M8P console shows the first reading:
+
+```
+           thermistor PV[2]: 23.4 C, ADC 62410
+```
+
+`"Pullup"` in `"Thermistor"` sets another pullup (Ohm). Only NTC thermistors
+(Beta formula), no PT1000. The heater output goes low when the node loses the
+hub or LinuxCNC.
 
 ## E-stop when the node is missing
 
