@@ -13,14 +13,18 @@
 #   ./reflash.sh -n config.txt my.json     # any file name, uploaded as config.txt
 #
 # Environment:
-#   SPI_DEV        spidev device        (default /dev/spidev0.0)
+#   SPI_DEV        spidev device        (default: the first /dev/spidevB.C, as remora-spi)
 #   SPI_SPEED      SPI clock in Hz      (default 4000000)
+#   SPI_CS_PIN     chip select on a GPIO, e.g. PC10 on a BTT CB1 (as remora-spi spi_cs_pin)
+#   SPI_CS_CHIP    its gpiochip         (default /dev/gpiochip0)
 #   REMORA_UPLOAD  path to remora-upload (default: built next to this script)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SPI_DEV="${SPI_DEV:-/dev/spidev0.0}"
+SPI_DEV="${SPI_DEV:-$(ls /dev/spidev*.* 2>/dev/null | sort -V | head -n 1 || true)}"
+SPI_CS_PIN="${SPI_CS_PIN:-}"
+SPI_CS_CHIP="${SPI_CS_CHIP:-/dev/gpiochip0}"
 SPI_SPEED="${SPI_SPEED:-4000000}"
 REMORA_UPLOAD="${REMORA_UPLOAD:-$SCRIPT_DIR/remora-upload}"
 FLASH_WAIT=15          # seconds for the bootloader to flash and the firmware to start
@@ -29,7 +33,7 @@ die()  { echo "error: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
 
 usage() {
-    sed -n '9,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '9,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
@@ -80,10 +84,10 @@ if pgrep -x rtapi_app >/dev/null || pgrep -x linuxcnc >/dev/null; then
     die "LinuxCNC is running, stop it first"
 fi
 
-[ -e "$SPI_DEV" ] || die "$SPI_DEV missing - add 'dtparam=spi=on' to /boot/firmware/config.txt and reboot"
+[ -n "$SPI_DEV" ] && [ -e "$SPI_DEV" ] || die "no spidev device - enable spidev (Pi: 'dtparam=spi=on' in /boot/firmware/config.txt) and reboot"
 
 SUDO=""
-if [ "$(id -u)" -ne 0 ] && [ ! -w "$SPI_DEV" ]; then
+if [ "$(id -u)" -ne 0 ] && { [ ! -w "$SPI_DEV" ] || { [ -n "$SPI_CS_PIN" ] && [ ! -w "$SPI_CS_CHIP" ]; }; }; then
     SUDO="sudo"
 fi
 
@@ -99,7 +103,9 @@ upload() {
     # upload FILE NAME [extra options]
     local file="$1" name="$2"
     shift 2
-    $SUDO "$REMORA_UPLOAD" -d "$SPI_DEV" -s "$SPI_SPEED" -n "$name" "$@" "$file"
+    local cs=()
+    [ -z "$SPI_CS_PIN" ] || cs=(--spi-cs-pin "$SPI_CS_PIN" --spi-cs-chip "$SPI_CS_CHIP")
+    $SUDO "$REMORA_UPLOAD" -d "$SPI_DEV" -s "$SPI_SPEED" "${cs[@]}" -n "$name" "$@" "$file"
 }
 
 # ---- upload, rebooting only after the last file ------------------------------

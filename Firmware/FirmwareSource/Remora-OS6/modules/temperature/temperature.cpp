@@ -39,10 +39,10 @@ Temperature::Temperature(volatile float &ptrFeedback, int32_t threadFreq, int32_
   ptrFeedback(&ptrFeedback),
   sensorType(sensorType),
   pinSensor(pinSensor),
+  sensorError(false),
 	beta(beta),
 	r0(r0),
-	t0(t0),
-  sensorError(false)
+	t0(t0)
 {
     if (this->sensorType == "Thermistor")
     {

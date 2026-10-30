@@ -104,6 +104,9 @@ uint32_t servo_freq = PRU_SERVOFREQ;
 volatile bool PRUreset;
 bool configError = false;
 bool threadsRunning = false;
+bool configFound = false;           // config.txt as read at boot, reported to remora-upload --sync
+uint32_t configSize = 0;
+uint32_t configCrc = 0;
 
 // pointers to objects with global scope
 pruThread* servoThread;
@@ -247,9 +250,18 @@ void readJsonConfig()
 
     strJson.reserve(length+1);
 
+    configFound = true;
     while (!feof(jsonFile)) {
         int c = fgetc(jsonFile);
         strJson.push_back(c);
+#ifdef SD_UPLOAD
+        // CRC of the file bytes (not the EOF pushed above), the host compares it with its copy
+        if (c != EOF) {
+            uint8_t b = (uint8_t)c;
+            configCrc = SDUpload::crc32(configCrc, &b, 1);
+            configSize++;
+        }
+#endif
     }
 
     // Remove comments from next line to print out the JSON config file
@@ -682,6 +694,9 @@ int main()
             readJsonConfig();
             setup();
             deserialiseJSON();
+#ifdef SD_UPLOAD
+            sdUpload.setConfigInfo(configFound, configError, configSize, configCrc);
+#endif
 #ifdef CAN_HUB
             configCan();
 #endif

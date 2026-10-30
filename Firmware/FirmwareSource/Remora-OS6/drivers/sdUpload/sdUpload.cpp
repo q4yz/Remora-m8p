@@ -26,6 +26,17 @@ SDUpload::SDUpload(RemoraComms* comms, FATFileSystem* fileSystem, BlockDevice* b
     this->lastFrameTick = 0;
     this->rebootTick = 0;
     this->bufLen = 0;
+    this->configFlags = 0;
+    this->configSize = 0;
+    this->configCrc = 0;
+}
+
+
+void SDUpload::setConfigInfo(bool found, bool error, uint32_t size, uint32_t crc)
+{
+    this->configFlags = (found ? UPLOAD_INFO_CONFIG : 0) | (error ? UPLOAD_INFO_ERROR : 0);
+    this->configSize = size;
+    this->configCrc = crc;
 }
 
 
@@ -203,6 +214,20 @@ void SDUpload::handleFrame(uploadCmd_t* cmd)
             break;
         }
 
+        case UPLOAD_CMD_INFO:
+        {
+            if (!this->active) this->enterUploadMode();
+
+            // reported in the offset / CRC fields, they are not used outside a transfer
+            uint32_t offset = this->nextOffset, crc = this->receivedCrc;
+            this->nextOffset = this->configSize;
+            this->receivedCrc = this->configCrc;
+            this->reply(cmd->seq, UPLOAD_ST_OK, UPLOAD_ERR_NONE, this->configFlags);
+            this->nextOffset = offset;
+            this->receivedCrc = crc;
+            break;
+        }
+
         case UPLOAD_CMD_REBOOT:
         case UPLOAD_CMD_ABORT:
             // reboot once the host has had time to read the reply
@@ -314,7 +339,7 @@ uint8_t SDUpload::verifyAndRename()
 }
 
 
-void SDUpload::reply(uint8_t seq, uint8_t status, uint8_t error)
+void SDUpload::reply(uint8_t seq, uint8_t status, uint8_t error, uint8_t flags)
 {
     uploadReply_t reply;
     memset(&reply, 0, sizeof(reply));
@@ -323,6 +348,7 @@ void SDUpload::reply(uint8_t seq, uint8_t status, uint8_t error)
     reply.status = status;
     reply.seq = seq;
     reply.error = error;
+    reply.spare0 = flags;
     reply.nextOffset = this->nextOffset;
     reply.fileCrc = this->receivedCrc;
     reply.crc = crc32(0, (uint8_t*)&reply, SPI_BUFF_SIZE - 4);

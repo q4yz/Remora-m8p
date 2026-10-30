@@ -51,6 +51,13 @@
 #define UPLOAD_CMD_END      3               // write, verify and rename the file
 #define UPLOAD_CMD_REBOOT   4               // reboot the board
 #define UPLOAD_CMD_ABORT    5               // abandon the upload and reboot
+#define UPLOAD_CMD_INFO     6               // reply: nextOffset = config.txt size, fileCrc = its CRC-32,
+                                            // spare0 = UPLOAD_INFO_*; enters upload mode (stops the
+                                            // threads, they would overwrite the reply), so REBOOT after it
+
+// INFO reply flags (spare0)
+#define UPLOAD_INFO_CONFIG  0x01            // config.txt was found at boot
+#define UPLOAD_INFO_ERROR   0x02            // it did not load (JSON or board error)
 
 // reply status
 #define UPLOAD_ST_OK        1
@@ -126,6 +133,10 @@ class SDUpload
         uint32_t            lastFrameTick;
         uint32_t            rebootTick;
 
+        uint8_t             configFlags;    // UPLOAD_INFO_*, config.txt as read at boot
+        uint32_t            configSize;
+        uint32_t            configCrc;
+
         uint32_t            bufLen;
         uint8_t             buffer[UPLOAD_BUF_SIZE];
 
@@ -133,9 +144,12 @@ class SDUpload
         void enterUploadMode(void);
         uint8_t writeToCard(bool finish);
         uint8_t verifyAndRename(void);
-        void reply(uint8_t seq, uint8_t status, uint8_t error);
+        void reply(uint8_t seq, uint8_t status, uint8_t error, uint8_t flags = 0);
 
     public:
+
+        // config.txt as loaded at boot, reported by UPLOAD_CMD_INFO
+        void setConfigInfo(bool found, bool error, uint32_t size, uint32_t crc);
 
         SDUpload(RemoraComms*, FATFileSystem*, BlockDevice*, volatile txData_t*, void (*onStart)(void));
 
