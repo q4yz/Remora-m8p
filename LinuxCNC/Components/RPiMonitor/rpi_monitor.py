@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Raspberry Pi health monitor — a userspace LinuxCNC HAL component.
+"""Host board health monitor (Raspberry Pi, BTT CB1) — a userspace
+LinuxCNC HAL component.
 
 Samples the SoC temperature and overall CPU load and publishes them as
 HAL pins, so they can be watched in halmeter/halscope, latched into a
@@ -13,13 +14,19 @@ Pins (component name: ``rpi-monitor``):
     rpi-monitor.cpu-load   float OUT  CPU busy time across all cores, 0-100 %
     rpi-monitor.ok         bit   OUT  TRUE while the last sample read cleanly
 
+The temperature comes from the CPU's thermal zone, found by its type
+(``cpu-thermal`` on a Pi and on the CB1's Allwinner H616, which also has
+GPU / video-engine / DDR zones), falling back to ``thermal_zone0``.
+
 If a sample fails (sensor file missing, e.g. not running on a Pi) the
 value pins keep their last good value and ``ok`` goes FALSE, rather
 than publishing a misleading 0.
 
 Environment overrides (mainly for testing off-Pi):
 
-    RPI_MONITOR_TEMP_FILE   default /sys/class/thermal/thermal_zone0/temp
+    RPI_MONITOR_TEMP_FILE   a temp file to read; default: the CPU zone found
+                            under RPI_MONITOR_THERMAL_DIR
+    RPI_MONITOR_THERMAL_DIR default /sys/class/thermal
     RPI_MONITOR_STAT_FILE   default /proc/stat
 
 This program is free software; you can redistribute it and/or modify it
@@ -28,14 +35,48 @@ Free Software Foundation; either version 2 of the License, or (at your
 option) any later version.
 """
 
+import glob
 import os
 import signal
 import sys
 import time
 
 DEFAULT_INTERVAL_S = 1.0
-TEMP_FILE = os.environ.get("RPI_MONITOR_TEMP_FILE", "/sys/class/thermal/thermal_zone0/temp")
+THERMAL_DIR = os.environ.get("RPI_MONITOR_THERMAL_DIR", "/sys/class/thermal")
 STAT_FILE = os.environ.get("RPI_MONITOR_STAT_FILE", "/proc/stat")
+
+#: Thermal zone types that are the CPU, best first. "cpu-thermal" /
+#: "cpu_thermal": Raspberry Pi and Allwinner H616 (BTT CB1) kernels;
+#: "soc-thermal" / "soc_thermal": some Rockchip/Amlogic boards.
+CPU_ZONE_TYPES = ("cpu-thermal", "cpu_thermal", "cpu0-thermal", "soc-thermal", "soc_thermal")
+
+
+def find_cpu_temp_file(thermal_dir=THERMAL_DIR):
+    """The ``temp`` file of the CPU's thermal zone.
+
+    A Pi has one zone; the CB1's H616 has four (cpu, gpu, ve, ddr) whose
+    numbering depends on the kernel's device tree, so the zone is picked
+    by its ``type``, not its number. No match falls back to zone 0.
+    """
+    zones = sorted(
+        glob.glob(os.path.join(thermal_dir, "thermal_zone*")),
+        key=lambda z: (len(z), z),  # thermal_zone2 before thermal_zone10
+    )
+    types = {}
+    for zone in zones:
+        try:
+            with open(os.path.join(zone, "type")) as f:
+                types[zone] = f.read().strip().lower()
+        except OSError:
+            continue
+    for wanted in CPU_ZONE_TYPES:
+        for zone in zones:
+            if types.get(zone) == wanted:
+                return os.path.join(zone, "temp")
+    return os.path.join(thermal_dir, "thermal_zone0", "temp")
+
+
+TEMP_FILE = os.environ.get("RPI_MONITOR_TEMP_FILE") or find_cpu_temp_file()
 
 
 def read_cpu_temp(path=TEMP_FILE):
@@ -99,6 +140,7 @@ def main(argv):
         print("rpi-monitor: cannot read %s: %s" % (STAT_FILE, exc), file=sys.stderr)
         sampler = None
     h["ok"] = False
+    print("rpi-monitor: reading temperature from %s" % TEMP_FILE)
     h.ready()
 
     try:

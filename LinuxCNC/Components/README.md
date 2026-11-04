@@ -50,7 +50,7 @@ sudo halcompile --install ./PIDcontroller/PIDcontroller.c
 
 
 
-Userspace Python components are not compiled — load them from HAL with `loadusr`, e.g. the Raspberry Pi temperature/load monitor:
+Userspace Python components are not compiled — load them from HAL with `loadusr`, e.g. the host temperature/load monitor (Raspberry Pi, BTT CB1):
 
 
 
