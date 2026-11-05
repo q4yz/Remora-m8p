@@ -29,6 +29,7 @@
 #define SUNXI_GBL_CTL           0x04
 #define SUNXI_GBL_BUS_ENABLE    (1u << 0)
 #define SUNXI_GBL_MASTER        (1u << 1)
+#define SUNXI_GBL_RESET         (1u << 31)  // soft reset: stops the transfer, clears state machine and FIFOs
 
 #define SUNXI_TFR_CTL           0x08
 #define SUNXI_TFR_CS_MASK       0x30
@@ -61,6 +62,7 @@ static volatile uint8_t *sunxi_regs = NULL;
 static uint32_t sunxi_speed;            // SPI clock, for the timeout
 static int sunxi_cs = -1;               // controller chip select, -1: GPIO chip select
 static int sunxi_error_reported = 0;
+static unsigned long sunxi_timeouts = 0;
 
 static volatile uint8_t *sunxi_pio_map = NULL;
 static volatile uint32_t *sunxi_cs_dat = NULL;     // PIO data register of the GPIO chip select
@@ -74,6 +76,41 @@ static inline uint32_t sunxi_read(uint32_t reg)
 static inline void sunxi_write(uint32_t reg, uint32_t value)
 {
     *(volatile uint32_t *)(sunxi_regs + reg) = value;
+}
+
+
+// Move what the RX FIFO holds to rx and refill the TX FIFO
+static inline void sunxi_service_fifos(volatile uint8_t *txd, volatile uint8_t *rxd, const uint8_t *tx, uint8_t *rx,
+                                       uint32_t len, uint32_t *sent, uint32_t *received)
+{
+    uint32_t fsr = sunxi_read(SUNXI_FIFO_STA);
+    uint32_t rx_count = fsr & 0xff;
+    uint32_t tx_free = SUNXI_FIFO_DEPTH - ((fsr >> 16) & 0xff);
+
+    while (rx_count-- && *received < len) rx[(*received)++] = *rxd;
+    while (tx_free-- && *sent < len) *txd = tx[(*sent)++];
+}
+
+
+// Stop a transfer that did not finish: without this the controller keeps clocking the rest of
+// the frame after the chip select went high, and the next transfer starts on a busy controller.
+// Both leave the Remora board in the middle of a frame - the replies then come back shifted.
+static void sunxi_abort(void)
+{
+    // the soft reset may take the clock divider and mode with it: put them back afterwards
+    uint32_t gbl = sunxi_read(SUNXI_GBL_CTL) & ~SUNXI_GBL_RESET;
+    uint32_t tfr = sunxi_read(SUNXI_TFR_CTL) & ~SUNXI_TFR_XCH;
+    uint32_t clk = sunxi_read(SUNXI_CLK_CTL);
+    int i;
+
+    sunxi_write(SUNXI_GBL_CTL, gbl | SUNXI_GBL_RESET);
+    for (i = 0; i < 1000 && (sunxi_read(SUNXI_GBL_CTL) & SUNXI_GBL_RESET); i++) {}
+    sunxi_write(SUNXI_GBL_CTL, gbl);
+    sunxi_write(SUNXI_CLK_CTL, clk);
+    sunxi_write(SUNXI_TFR_CTL, tfr);
+    sunxi_write(SUNXI_INT_CTL, 0);
+    sunxi_write(SUNXI_FIFO_CTL, SUNXI_FIFO_RF_RST | SUNXI_FIFO_TF_RST);
+    sunxi_write(SUNXI_INT_STA, ~0u);
 }
 
 
@@ -269,15 +306,18 @@ int sunxi_spi_transfer(const uint8_t *tx, uint8_t *rx, uint32_t len)
 
     while (received < len)
     {
-        uint32_t fsr = sunxi_read(SUNXI_FIFO_STA);
-        uint32_t rx_count = fsr & 0xff;
-        uint32_t tx_free = SUNXI_FIFO_DEPTH - ((fsr >> 16) & 0xff);
+        sunxi_service_fifos(txd, rxd, tx, rx, len, &sent, &received);
 
-        while (rx_count-- && received < len) rx[received++] = *rxd;
-        while (tx_free-- && sent < len) *txd = tx[sent++];
-
-        if (rtapi_get_time() > deadline) break;
+        if (rtapi_get_time() > deadline)
+        {
+            // the thread may have been preempted past the deadline while the controller finished
+            // the frame: empty the FIFO once more before calling it a timeout
+            sunxi_service_fifos(txd, rxd, tx, rx, len, &sent, &received);
+            break;
+        }
     }
+
+    if (received < len) sunxi_abort();      // still clocking: stop it before the chip select goes high
 
     if (sunxi_cs >= 0) sunxi_write(SUNXI_TFR_CTL, tcr | SUNXI_TFR_CS_LEVEL);
     if (sunxi_cs_dat) *sunxi_cs_dat |= sunxi_cs_bit;        // rising edge: frame complete
@@ -287,9 +327,12 @@ int sunxi_spi_transfer(const uint8_t *tx, uint8_t *rx, uint32_t len)
         // never return a stale frame, the caller rejects an invalid header
         memset(rx, 0, len);
 
-        if (!sunxi_error_reported)
+        sunxi_timeouts++;
+        if (!sunxi_error_reported || (sunxi_timeouts & (sunxi_timeouts - 1)) == 0)
         {
-            rtapi_print_msg(RTAPI_MSG_ERR, "sunxi_spi: SPI transfer timeout, %u of %u bytes\n", received, len);
+            // first one, then at 2, 4, 8, ... so a recurring problem stays visible
+            rtapi_print_msg(RTAPI_MSG_ERR, "sunxi_spi: SPI transfer timeout, %u of %u bytes (%lu so far)\n",
+                            received, len, sunxi_timeouts);
             sunxi_error_reported = 1;
         }
         return 0;
