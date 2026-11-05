@@ -795,6 +795,16 @@ void debugBootInfo()
     if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) printf(" WATCHDOG");
     printf("\n");
     __HAL_RCC_CLEAR_RESET_FLAGS();
+
+    // what the threads did before this reset (TAMP backup registers survive it, not a power cycle)
+    uint32_t bMax, bOvr, sMax, sOvr;
+    pruThread::bkpEnable();
+    pruThread::bkpLoad(0, &bMax, &bOvr);
+    pruThread::bkpLoad(1, &sMax, &sOvr);
+    uint32_t tpu = SystemCoreClock / 1000000;
+    printf("[debug] before this reset: base thread max %lu us, %lu overruns; servo thread max %lu us, %lu overruns\n",
+           (unsigned long)(bMax / tpu), (unsigned long)bOvr, (unsigned long)(sMax / tpu), (unsigned long)sOvr);
+    pruThread::bkpClear();
 }
 
 void debugLinkReport(int state)
@@ -812,6 +822,16 @@ void debugLinkReport(int state)
            (unsigned long)comms->dbgFrames, (unsigned long)comms->dbgReads, (unsigned long)comms->dbgWrites,
            (unsigned long)comms->dbgRejects, (unsigned long)comms->dbgLastBad, (unsigned long)comms->dbgTorn, (unsigned long)comms->dbgRearms, (unsigned long)comms->dbgLost, (unsigned long)comms->dbgLate, (unsigned long)comms->dbgTimeouts,
            configError ? "ERROR" : "ok");
+
+    if (baseThread && servoThread)
+    {
+        uint32_t tpu = SystemCoreClock / 1000000;
+        printf("[debug] load: base max %lu/%lu us, %lu overruns; servo max %lu/%lu us, %lu overruns\n",
+               (unsigned long)(baseThread->maxTicks / tpu), (unsigned long)(baseThread->periodTicks() / tpu),
+               (unsigned long)baseThread->overruns,
+               (unsigned long)(servoThread->maxTicks / tpu), (unsigned long)(servoThread->periodTicks() / tpu),
+               (unsigned long)servoThread->overruns);
+    }
 }
 #endif
 
