@@ -40,6 +40,22 @@ class pruThread
 		void startThread(void);
         void stopThread(void);
 		void run(void);
+
+		// load measurement: the longest run() in timer ticks (SystemCoreClock / TIM_PSC) and the
+		// runs that took longer than a thread period (the next timer update was already pending).
+		// Mirrored into the TAMP backup registers, which survive a watchdog reset: the next boot
+		// of a debug build prints what the threads did before it (see bkpLoad()).
+		volatile uint32_t	maxTicks;
+		volatile uint32_t	overruns;
+		uint32_t			periodTicks(void) const { return this->timer->ARR + 1; }
+
+		static void bkpEnable(void);
+		// slot 0 base thread (TIM6), 1 servo thread (TIM7): max ticks in BKP[2*slot], overruns in BKP[2*slot+1]
+		static void bkpLoad(int slot, uint32_t* maxTicks, uint32_t* overruns);
+		static void bkpClear(void);
+
+	private:
+		int bkpSlot;
 };
 
 #endif

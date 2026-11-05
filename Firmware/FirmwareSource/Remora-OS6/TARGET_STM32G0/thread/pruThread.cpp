@@ -5,13 +5,41 @@
 
 using namespace std;
 
+
+void pruThread::bkpEnable(void)
+{
+	// the TAMP backup registers need the RTC APB clock and backup domain write access
+	RCC->APBENR1 |= RCC_APBENR1_PWREN | RCC_APBENR1_RTCAPBEN;
+	(void)RCC->APBENR1;
+	PWR->CR1 |= PWR_CR1_DBP;
+}
+
+void pruThread::bkpLoad(int slot, uint32_t* maxTicks, uint32_t* overruns)
+{
+	volatile uint32_t* bkp = &TAMP->BKP0R;
+	*maxTicks = bkp[2 * slot];
+	*overruns = bkp[2 * slot + 1];
+}
+
+void pruThread::bkpClear(void)
+{
+	volatile uint32_t* bkp = &TAMP->BKP0R;
+	for (int i = 0; i < 4; i++) bkp[i] = 0;
+}
+
+
 // Thread constructor
 pruThread::pruThread(TIM_TypeDef* timer, IRQn_Type irq, uint32_t frequency) :
 	timer(timer),
 	irq(irq),
 	frequency(frequency),
-	hasThreadPost(false)
+	hasThreadPost(false),
+	maxTicks(0),
+	overruns(0)
 {
+	this->bkpSlot = (timer == TIM6) ? 0 : (timer == TIM7) ? 1 : -1;
+	if (this->bkpSlot >= 0) bkpEnable();
+
 	// the Cortex-M0+ has no cycle counter, the minimum step pulse width is timed with the thread's
 	// own timer counter, which counts at SystemCoreClock / TIM_PSC
 	this->postDelayTicks = (uint32_t)(((uint64_t)SystemCoreClock / TIM_PSC * STEP_PULSE_MIN_NS) / 1000000000ULL);
@@ -68,5 +96,19 @@ void pruThread::run(void)
 		}
 
 		for (iter = vThreadPost.begin(); iter != vThreadPost.end(); ++iter) (*iter)->runModulePost();
+	}
+
+	// the update interrupt fires at CNT 0 and its flag was cleared on entry: CNT is the time
+	// this run took (interrupt latency included), a set flag means it took a whole period or more
+	uint32_t ticks = this->timer->CNT;
+	if (this->timer->SR & TIM_SR_UIF)
+	{
+		this->overruns++;
+		if (this->bkpSlot >= 0) (&TAMP->BKP0R)[2 * this->bkpSlot + 1] = this->overruns;
+	}
+	else if (ticks > this->maxTicks)
+	{
+		this->maxTicks = ticks;
+		if (this->bkpSlot >= 0) (&TAMP->BKP0R)[2 * this->bkpSlot] = ticks;
 	}
 }
