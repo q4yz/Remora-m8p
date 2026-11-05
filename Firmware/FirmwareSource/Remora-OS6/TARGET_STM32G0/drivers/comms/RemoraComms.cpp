@@ -51,9 +51,13 @@ RemoraComms::RemoraComms(volatile rxData_t* ptrRxData, volatile txData_t* ptrTxD
         printf("Error - STM32G0 Remora comms only supports SPI2 with NSS on PB_12\n");
     }
 
-    // Cortex-M0+ has 4 priority levels, keep the NSS edge below the base thread
+    // Cortex-M0+ has 4 priority levels (us ticker 0, base thread 1, servo 2, comms 3). The NSS edge
+    // goes to 0: below the threads the servo thread (ADC reads, all its modules) held it back by
+    // more than the gap to the next frame, and the base thread could preempt it in the middle of
+    // frameRearm() - with the SPI in reset when the next frame started (0xffffffff, shifted replies).
+    // The handler is a few us: a 64 byte copy and the re-arm, the base thread jitters by that much.
     slaveSelect.rise(callback(this, &RemoraComms::NSSinterrupt));
-    HAL_NVIC_SetPriority(EXTI4_15_IRQn, 3, 0);
+    HAL_NVIC_SetPriority(EXTI4_15_IRQn, 0, 0);
 }
 
 

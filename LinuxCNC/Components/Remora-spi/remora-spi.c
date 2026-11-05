@@ -78,6 +78,7 @@ typedef struct {
 	hal_u32_t		*badHeader;			// header of the last rejected reply from the board
 	hal_u32_t		*badCount;			// rejected replies since LinuxCNC started
 	hal_u32_t		*xferErrors;		// transfers the host SPI driver could not complete (timeout, ioctl error)
+	hal_u32_t		*badRunMax;			// longest run of consecutive bad replies since LinuxCNC started
 	hal_bit_t 		*stepperEnable[JOINTS];
 	int				pos_mode[JOINTS];
 	hal_float_t 	*pos_cmd[JOINTS];			// pin: position command (position units)
@@ -214,6 +215,13 @@ RTAPI_MP_STRING(spi_cs_pin, "chip select GPIO for the generic driver when the SP
 char *spi_cs_chip = GSPI_DEFAULT_GPIOCHIP;
 RTAPI_MP_STRING(spi_cs_chip, "gpiochip of spi_cs_pin for the generic driver");
 
+// One SPI frame per servo period instead of a READ and a WRITE about 0.1 ms apart. A slow board
+// (STM32G0 under base thread load) handles the frame end in an interrupt that can be later than
+// that gap: the second frame then lands on an SPI/DMA that is not re-armed yet and the replies
+// come back shifted or as zeros. Costs one servo period of command latency.
+int single_frame = 1;
+RTAPI_MP_INT(single_frame, "1 (default): one WRITE frame per servo period, its reply is the feedback; 0: separate READ and WRITE frames");
+
 static int reset_gpio_pin = 25;				// RPI GPIO pin number used to force watchdog reset of the PRU 
 
 
@@ -237,9 +245,26 @@ static int spi_transfer();
 static int xfer_fail_run = 0;
 
 // consecutive replies with an unknown header tolerated while the link is up (the board's own
-// E-stop and over temperature headers act at once)
-#define BAD_REPLY_MAX	3
+// E-stop and over temperature headers act at once). The board keeps receiving the commands
+// while only its reply is broken (M8P: rejected=0 while the host sees zeros / 0xffffffff for a
+// few frames), so during such a run the feedback is dead-reckoned from the commanded step
+// rate instead of being frozen. Module parameter bad_reply_max, default 10 (10 ms at 1 kHz).
+int bad_reply_max = 10;
+RTAPI_MP_INT(bad_reply_max, "consecutive bad replies tolerated before SPI-status drops (default 10, min 1)");
 static int bad_reply_run = 0;
+
+// while a reply is unusable: advance the position feedback by what the board was told to step
+static void dead_reckon(void)
+{
+	int i;
+	for (i = 0; i < JOINTS; i++)
+	{
+		{ double d = data->freq[i] * dt; count[i] += (int32_t)(d >= 0 ? d + 0.5 : d - 0.5); }
+		old_count[i] = count[i];
+		*(data->count[i]) = count[i];
+		*(data->pos_fb[i]) = (float)(count[i]) / data->pos_scale[i];
+	}
+}
 static CONTROL parse_ctrl_type(const char *ctrl);
 
 /***********************************************************************
@@ -358,6 +383,11 @@ int rtapi_app_main(void)
 			comp_id, "%s.SPI-transfer-errors", prefix);
 	if (retval != 0) goto error;
 	*(data->xferErrors) = 0;
+
+	retval = hal_pin_u32_newf(HAL_OUT, &(data->badRunMax),
+			comp_id, "%s.SPI-bad-run-max", prefix);
+	if (retval != 0) goto error;
+	*(data->badRunMax) = 0;
 
 	if (bcm == true)
 	{
@@ -1164,9 +1194,11 @@ void spi_read()
 	int n = 2;
 	int M = 250;
 
-	// Data header
-	txData.header = PRU_READ;
-	
+	// Data header. single_frame: the one frame of the cycle is a WRITE carrying the commands
+	// spi_write() prepared last cycle; the board answers every frame with its feedback, so this
+	// frame is the READ as well. Otherwise the classic READ here and a separate WRITE in spi_write().
+	txData.header = single_frame ? PRU_WRITE : PRU_READ;
+
 	// update the PRUreset output
 	// TODO: fix this up to include RP1
 	
@@ -1220,6 +1252,10 @@ void spi_read()
 					rtapi_print_msg(RTAPI_MSG_ERR, "%s: %d SPI transfers in a row failed on the host\n",
 									modname, xfer_fail_run);
 					xfer_fail_run = 0;
+				}
+				else if (*(data->SPIstatus))
+				{
+					dead_reckon();
 				}
 				data->SPIresetOld = *(data->SPIreset);
 				return;
@@ -1309,15 +1345,21 @@ void spi_read()
 
 				default:
 					// we have received a BAD payload from the PRU: the reply is unusable, this cycle
-					// keeps the last feedback. A single one is a corrupted frame, the board re-arms its
-					// SPI after every frame; BAD_REPLY_MAX in a row and the link counts as lost.
+					// dead-reckons the feedback. A short run is a broken reply while the board still
+					// takes the commands; bad_reply_max in a row and the link counts as lost.
 					// On a reset attempt (SPI-status low) it stays low.
 					*(data->badHeader) = (uint32_t)rxData.header;
 					*(data->badCount) += 1;
-					if (++bad_reply_run >= BAD_REPLY_MAX || !*(data->SPIstatus))
+					++bad_reply_run;
+					if ((uint32_t)bad_reply_run > *(data->badRunMax)) *(data->badRunMax) = bad_reply_run;
+					if (bad_reply_run >= (bad_reply_max < 1 ? 1 : bad_reply_max) || !*(data->SPIstatus))
 					{
 						*(data->SPIstatus) = 0;
 						bad_reply_run = 0;
+					}
+					else
+					{
+						dead_reckon();
 					}
 
 					rtapi_print("Bad SPI payload = %x\n", rxData.header);
@@ -1381,7 +1423,8 @@ void spi_write()
 		}
 	}
 
-	if( *(data->SPIstatus) )
+	// single_frame: the commands go out with the next spi_read() frame, no second frame here
+	if( *(data->SPIstatus) && !single_frame )
 	{
 		// Transfer to and from the PRU
 		if (!spi_transfer()) *(data->xferErrors) += 1;
