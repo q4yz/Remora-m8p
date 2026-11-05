@@ -34,6 +34,7 @@ class RemoraComms : public Module
         volatile uint8_t    qTail;              // next slot SPItasks() takes
         volatile uint32_t   lastEdgeTick;       // HAL tick of the last NSS edge
         volatile bool       rearmed;            // re-armed since the last NSS edge
+        volatile bool       restarting;         // stopDMA() / restartDMA(): the interrupt leaves the SPI alone
         uint8_t             tornCnt;
 
         uint8_t             noDataCount;
@@ -59,6 +60,7 @@ class RemoraComms : public Module
         InterruptIn         slaveSelect;
 
         void NSSinterrupt(void);
+        void frameRearm(void);
 
     public:
 
@@ -88,6 +90,7 @@ class RemoraComms : public Module
         volatile int32_t    dbgLastBad;         // header of the last rejected frame
         volatile uint32_t   dbgRearms;          // re-arms after a quiet bus
         volatile uint32_t   dbgLost;            // frames dropped because the queue was full
+        volatile uint32_t   dbgLate;            // frame ends where the next frame had already started (no re-arm)
         volatile uint32_t   dbgTorn;            // frames dropped: NSS edge off the frame boundary or
                                                 // the next frame already started during the copy
 };

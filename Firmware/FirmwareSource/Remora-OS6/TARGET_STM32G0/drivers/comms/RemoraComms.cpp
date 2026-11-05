@@ -42,6 +42,8 @@ RemoraComms::RemoraComms(volatile rxData_t* ptrRxData, volatile txData_t* ptrTxD
     this->rearmed = true;
     this->qHead = this->qTail = 0;
     this->dbgLost = 0;
+    this->dbgLate = 0;
+    this->restarting = false;
     this->tornCnt = 0;
 
     if (this->spiType != SPI2 || this->interruptPin != PB_12)
@@ -165,6 +167,36 @@ void RemoraComms::start()
 }
 
 
+// Start the SPI and both DMA channels over at byte 0, register level (a few us). Run at every frame
+// end while the bus is idle: whatever state the reply side was left in (a byte in the TX FIFO too
+// many or too few, a stray clock edge in the bit counter) is gone before the next frame, in both
+// directions. The DMA channels keep their HAL set up (addresses, circular, DMAMUX request).
+void RemoraComms::frameRearm()
+{
+    DMA1_Channel2->CCR &= ~DMA_CCR_EN;
+    DMA1_Channel3->CCR &= ~DMA_CCR_EN;
+
+    // the only way to empty the TX FIFO: reset the peripheral
+    __HAL_RCC_SPI2_FORCE_RESET();
+    __HAL_RCC_SPI2_RELEASE_RESET();
+
+    // as HAL_SPI_Init left it: CR1 0 = slave, mode 0, MSB first, hardware NSS input
+    SPI2->CR1 = 0;
+    SPI2->CR2 = SPI_DATASIZE_8BIT | SPI_CR2_FRXTH | SPI_CR2_RXDMAEN;
+
+    DMA1->IFCR = DMA_IFCR_CGIF2 | DMA_IFCR_CGIF3;
+    DMA1_Channel2->CNDTR = SPI_BUFF_SIZE;
+    DMA1_Channel3->CNDTR = SPI_BUFF_SIZE;
+    DMA1_Channel2->CCR |= DMA_CCR_EN;
+    DMA1_Channel3->CCR |= DMA_CCR_EN;
+
+    // TX DMA before SPE (RM0444 SPI DMA sequence): the FIFO holds the first reply bytes before
+    // the master's next clock edge
+    SPI2->CR2 |= SPI_CR2_TXDMAEN;
+    SPI2->CR1 |= SPI_CR1_SPE;
+}
+
+
 void RemoraComms::NSSinterrupt()
 {
     // NSS / CS has gone high, a frame is complete. The frame is copied here, not in the main loop:
@@ -188,6 +220,7 @@ void RemoraComms::NSSinterrupt()
     {
         // the main loop is far behind: drop this frame, the ones queued stay intact
         this->dbgLost++;
+        if (!this->restarting && (GPIOB->IDR & GPIO_PIN_12)) this->frameRearm();
         return;
     }
 
@@ -207,6 +240,14 @@ void RemoraComms::NSSinterrupt()
 
     this->frameTorn[slot] = torn;
     this->qHead = next;                     // publish the slot after it is complete
+
+    // re-arm for the next frame, unless it has already started (NSS low again): then the circular
+    // DMA simply carries on, as without the re-arm
+    if (!this->restarting)
+    {
+        if (GPIOB->IDR & GPIO_PIN_12) this->frameRearm();
+        else this->dbgLate++;
+    }
 }
 
 
@@ -351,11 +392,14 @@ void RemoraComms::setUploadMode(bool mode)
 void RemoraComms::stopDMA()
 {
     // the SD card has its own SPI bus here, pausing just keeps the frames in step with the main loop
+    // restartDMA() resumes; until then the NSS interrupt must not re-arm the SPI
+    this->restarting = true;
     HAL_SPI_DMAStop(&this->spiHandle);
 }
 
 void RemoraComms::restartDMA()
 {
+    this->restarting = true;
     HAL_SPI_DMAStop(&this->spiHandle);
 
     // wait for the master to finish any transfer in progress so the next frame starts on a boundary
@@ -372,4 +416,5 @@ void RemoraComms::restartDMA()
     this->rearmed = true;
     HAL_SPI_TransmitReceive_DMA(&this->spiHandle, (uint8_t *)this->ptrTxData->txBuffer, (uint8_t *)this->spiRxBuffer.rxBuffer, SPI_BUFF_SIZE);
     HAL_NVIC_DisableIRQ(DMA1_Channel2_3_IRQn);
+    this->restarting = false;
 }
