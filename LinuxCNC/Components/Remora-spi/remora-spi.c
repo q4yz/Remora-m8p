@@ -235,6 +235,11 @@ static int spi_transfer();
 // late or preempted thread on the host, not the board (the board drops the partial frame)
 #define XFER_FAIL_MAX	3
 static int xfer_fail_run = 0;
+
+// consecutive replies with an unknown header tolerated while the link is up (the board's own
+// E-stop and over temperature headers act at once)
+#define BAD_REPLY_MAX	3
+static int bad_reply_run = 0;
 static CONTROL parse_ctrl_type(const char *ctrl);
 
 /***********************************************************************
@@ -1225,6 +1230,7 @@ void spi_read()
 			{
 				case PRU_DATA:
 					// we have received a GOOD payload from the PRU
+					bad_reply_run = 0;
 					*(data->SPIstatus) = 1;
 					*(data->PRUovertemp) = 0;
 
@@ -1296,13 +1302,23 @@ void spi_read()
 				case PRU_ESTOP:
 					// we have an eStop notification from the PRU
 					*(data->SPIstatus) = 0;
-					 rtapi_print_msg(RTAPI_MSG_ERR, "An E-stop is active");
-
-				default:
-					// we have received a BAD payload from the PRU
-					*(data->SPIstatus) = 0;
+					rtapi_print_msg(RTAPI_MSG_ERR, "An E-stop is active");
 					*(data->badHeader) = (uint32_t)rxData.header;
 					*(data->badCount) += 1;
+					break;
+
+				default:
+					// we have received a BAD payload from the PRU: the reply is unusable, this cycle
+					// keeps the last feedback. A single one is a corrupted frame, the board re-arms its
+					// SPI after every frame; BAD_REPLY_MAX in a row and the link counts as lost.
+					// On a reset attempt (SPI-status low) it stays low.
+					*(data->badHeader) = (uint32_t)rxData.header;
+					*(data->badCount) += 1;
+					if (++bad_reply_run >= BAD_REPLY_MAX || !*(data->SPIstatus))
+					{
+						*(data->SPIstatus) = 0;
+						bad_reply_run = 0;
+					}
 
 					rtapi_print("Bad SPI payload = %x\n", rxData.header);
 					//for (i = 0; i < SPIBUFSIZE; i++) {
