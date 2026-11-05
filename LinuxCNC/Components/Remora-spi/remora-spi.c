@@ -308,7 +308,7 @@ int rtapi_app_main(void)
 	// check to see if the PRU base frequency has been set at the command line
 	if (PRU_base_freq != -1)
 	{
-		if ((PRU_base_freq < 40000) || (PRU_base_freq > 240000))
+		if ((PRU_base_freq < 10000) || (PRU_base_freq > 240000))	// STM32G0 boards run 20 kHz with 5 stepgens
 		{
 			rtapi_print_msg(RTAPI_MSG_ERR, "ERROR: PRU base frequency incorrect\n");
 			return -1;
