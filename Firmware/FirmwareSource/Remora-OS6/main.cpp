@@ -807,10 +807,10 @@ void debugLinkReport(int state)
     if (state == ST_RUNNING || (HAL_GetTick() - last) < 1000) return;
     last = HAL_GetTick();
 
-    printf("[debug] %s reset-pin=%d frames=%lu read=%lu write=%lu rejected=%lu (last 0x%08lx) torn=%lu rearms=%lu dma-timeouts=%lu config=%s\n",
+    printf("[debug] %s reset-pin=%d frames=%lu read=%lu write=%lu rejected=%lu (last 0x%08lx) torn=%lu rearms=%lu lost=%lu dma-timeouts=%lu config=%s\n",
            names[state], (int)PRUreset,
            (unsigned long)comms->dbgFrames, (unsigned long)comms->dbgReads, (unsigned long)comms->dbgWrites,
-           (unsigned long)comms->dbgRejects, (unsigned long)comms->dbgLastBad, (unsigned long)comms->dbgTorn, (unsigned long)comms->dbgRearms, (unsigned long)comms->dbgTimeouts,
+           (unsigned long)comms->dbgRejects, (unsigned long)comms->dbgLastBad, (unsigned long)comms->dbgTorn, (unsigned long)comms->dbgRearms, (unsigned long)comms->dbgLost, (unsigned long)comms->dbgTimeouts,
            configError ? "ERROR" : "ok");
 }
 #endif
