@@ -74,6 +74,7 @@ typedef struct {
 	hal_bit_t		*PRUreset;
 	bool			SPIresetOld;
 	hal_bit_t		*SPIstatus;
+	hal_bit_t		*PRUovertemp;		// the board shut down on MCU over temperature (latched until it sends data again)
 	hal_bit_t 		*stepperEnable[JOINTS];
 	int				pos_mode[JOINTS];
 	hal_float_t 	*pos_cmd[JOINTS];			// pin: position command (position units)
@@ -156,6 +157,7 @@ static const char 	*prefix = PREFIX;
 static bool			bcm;					// use BCM2835 driver
 static bool			rp1;					// use RP1 driver
 static bool			gspi;					// use the generic Linux spidev driver
+static int			gspi_registers;			// generic driver: frames on the Allwinner SPI registers (GSPI_REGISTERS_*)
 
 static int 			num_chan = 0;			// number of step generators configured
 static long 		old_dtns;				// update_freq function period in nsec - (THIS IS RUNNING IN THE PI)
@@ -192,7 +194,7 @@ RTAPI_MP_INT(SPI_freq, "SPI frequency");
 
 // for the generic Linux driver (boards other than the Raspberry Pi, e.g. BigTreeTech CB1)
 char *spi_backend = "auto";
-RTAPI_MP_STRING(spi_backend, "SPI driver: auto (Raspberry Pi drivers on a Pi, spidev otherwise) or spidev");
+RTAPI_MP_STRING(spi_backend, "SPI driver: auto (Raspberry Pi drivers on a Pi, SPI registers on Allwinner, spidev otherwise), sunxi (Allwinner SPI registers or fail) or spidev");
 
 char *spi_dev = "";
 RTAPI_MP_STRING(spi_dev, "spidev device for the generic driver, default: first /dev/spidevB.C found");
@@ -322,6 +324,11 @@ int rtapi_app_main(void)
 	retval = hal_pin_bit_newf(HAL_OUT, &(data->SPIstatus),
 			comp_id, "%s.SPI-status", prefix);
 	if (retval != 0) goto error;
+
+	retval = hal_pin_bit_newf(HAL_OUT, &(data->PRUovertemp),
+			comp_id, "%s.PRU-overtemp", prefix);
+	if (retval != 0) goto error;
+	*(data->PRUovertemp) = 0;
 
 	if (bcm == true)
 	{
@@ -571,14 +578,22 @@ int rt_peripheral_init(void)
         rtapi_print_msg(RTAPI_MSG_ERR,"Cannot open '/proc/device-tree/compatible' for read.\n");
     }
 
+    gspi_registers = GSPI_REGISTERS_AUTO;
     if (!strcmp(spi_backend, "spidev")) {
         if (bcm || rp1) {
             rtapi_print_msg(RTAPI_MSG_ERR, "spi_backend=spidev, using the generic spidev driver instead of the Raspberry Pi driver\n");
         }
         bcm = false;
         rp1 = false;
+        gspi_registers = GSPI_REGISTERS_NEVER;
+    } else if (!strcmp(spi_backend, "sunxi")) {
+        if (bcm || rp1) {
+            rtapi_print_msg(RTAPI_MSG_ERR, "ERROR: spi_backend=sunxi is for Allwinner boards, not a Raspberry Pi\n");
+            return 0;
+        }
+        gspi_registers = GSPI_REGISTERS_REQUIRED;
     } else if (strcmp(spi_backend, "auto")) {
-        rtapi_print_msg(RTAPI_MSG_ERR, "ERROR: spi_backend must be 'auto' or 'spidev'\n");
+        rtapi_print_msg(RTAPI_MSG_ERR, "ERROR: spi_backend must be 'auto', 'sunxi' or 'spidev'\n");
         return 0;
     }
 
@@ -678,7 +693,7 @@ int rt_peripheral_init(void)
 
 		if (SPI_freq == -1) SPI_freq = GSPI_DEFAULT_FREQ;
 
-		if (!gspi_init(dev, SPI_freq))
+		if (!gspi_init(dev, SPI_freq, gspi_registers))
 		{
 			return 0;
 		}
@@ -1172,6 +1187,7 @@ void spi_read()
 				case PRU_DATA:
 					// we have received a GOOD payload from the PRU
 					*(data->SPIstatus) = 1;
+					*(data->PRUovertemp) = 0;
 
 					for (i = 0; i < JOINTS; i++)
 					{
@@ -1222,6 +1238,22 @@ void spi_read()
 					}
 					break;
 					
+				case PRU_OVERTEMP:
+					// the board shut itself down on MCU over temperature: outputs off, drivers disabled,
+					// until it is reset. E-stop here; the process variables still arrive (MCU temperature)
+					*(data->SPIstatus) = 0;
+					if (!*(data->PRUovertemp))
+					{
+						rtapi_print_msg(RTAPI_MSG_ERR, "%s: MCU OVER TEMPERATURE - the board switched all outputs off, "
+										"let it cool down, then reset or power cycle it\n", modname);
+					}
+					*(data->PRUovertemp) = 1;
+					for (i = 0; i < VARIABLES; i++)
+					{
+						*(data->processVariable[i]) = rxData.processVariable[i];
+					}
+					break;
+
 				case PRU_ESTOP:
 					// we have an eStop notification from the PRU
 					*(data->SPIstatus) = 0;

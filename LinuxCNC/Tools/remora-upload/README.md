@@ -109,6 +109,26 @@ the device, clock, GPIO chip select and tool path, e.g. on a CB1:
 SPI_CS_PIN=PC10 SPI_SPEED=1000000 ./reflash.sh config.txt
 ```
 
+## When the board does not answer
+
+"no reply from the board" says what came back on MISO:
+
+- **MISO stays high (every byte 0xFF):** nothing drives MISO, the board's SPI is
+  not running. Either the firmware does not run (wrong file, a reset loop) or
+  MISO / the chip select is not connected. A common cause is an SD card the
+  board cannot read, e.g. one formatted on Linux (GPT, exFAT, no partition
+  table): the bootloader still flashes `firmware.bin`, Remora then cannot mount
+  the card. Format it FAT32 with an MBR partition table (32 GB or smaller, the
+  SD Association's SD Card Formatter does this) and copy `firmware.bin` again.
+- **MISO stays low (every byte 0x00):** check the MISO wire and the ground.
+- **Changing bytes:** a board answers, but not to upload frames: SPI clock,
+  chip select or firmware without SD upload.
+
+Firmware from November 2026 on starts its watchdog only after it has read the
+SD card, so a slow or unreadable card no longer resets it in a loop. It then
+runs without modules, and `--info` / `--sync` report "the board could not read
+its SD card at boot". Its UART console prints `ERROR: SD card not readable`.
+
 ## How it works
 
 - The board accepts upload frames (`"upld"` header) only while LinuxCNC is not

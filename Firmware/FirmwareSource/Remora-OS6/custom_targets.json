@@ -18,6 +18,12 @@
         "device_has_remove": ["LPTICKER"],
         "device_name": "STM32G0B1RETx"
     },
+    "EBB_SB2209": {
+        "inherits": ["EBB42"],
+        "macros_add": [
+            "REMORA_NODE_BOARD=\"BTT EBB SB2209 CAN\""
+        ]
+    },
     "MANTA8": {
         "inherits": ["MCU_STM32G0"],
         "extra_labels_add": [
