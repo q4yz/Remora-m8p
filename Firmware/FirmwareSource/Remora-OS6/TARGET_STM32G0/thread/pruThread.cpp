@@ -28,6 +28,18 @@ void pruThread::bkpClear(void)
 }
 
 
+uint32_t pruThread::takeAverage(void)
+{
+	__disable_irq();
+	uint64_t sum = this->sumTicks;
+	uint32_t n = this->runs;
+	this->sumTicks = 0;
+	this->runs = 0;
+	__enable_irq();
+	return n ? (uint32_t)(sum / n) : 0;
+}
+
+
 // Thread constructor
 pruThread::pruThread(TIM_TypeDef* timer, IRQn_Type irq, uint32_t frequency) :
 	timer(timer),
@@ -35,7 +47,9 @@ pruThread::pruThread(TIM_TypeDef* timer, IRQn_Type irq, uint32_t frequency) :
 	frequency(frequency),
 	hasThreadPost(false),
 	maxTicks(0),
-	overruns(0)
+	overruns(0),
+	sumTicks(0),
+	runs(0)
 {
 	this->bkpSlot = (timer == TIM6) ? 0 : (timer == TIM7) ? 1 : -1;
 	if (this->bkpSlot >= 0) bkpEnable();
@@ -101,12 +115,16 @@ void pruThread::run(void)
 	// the update interrupt fires at CNT 0 and its flag was cleared on entry: CNT is the time
 	// this run took (interrupt latency included), a set flag means it took a whole period or more
 	uint32_t ticks = this->timer->CNT;
+	this->runs++;
 	if (this->timer->SR & TIM_SR_UIF)
 	{
+		this->sumTicks += ticks + this->timer->ARR + 1;
 		this->overruns++;
 		if (this->bkpSlot >= 0) (&TAMP->BKP0R)[2 * this->bkpSlot + 1] = this->overruns;
+		return;
 	}
-	else if (ticks > this->maxTicks)
+	this->sumTicks += ticks;
+	if (ticks > this->maxTicks)
 	{
 		this->maxTicks = ticks;
 		if (this->bkpSlot >= 0) (&TAMP->BKP0R)[2 * this->bkpSlot] = ticks;

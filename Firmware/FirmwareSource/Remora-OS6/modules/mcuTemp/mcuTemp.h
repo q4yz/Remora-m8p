@@ -66,6 +66,7 @@ class McuTemp : public Module
         float filtered;
         int   overCount;
         int   faultCount;
+        uint8_t pending;                // update() calls until a postponed reading (0: none)
 
         float read(bool &valid);
 

@@ -825,10 +825,14 @@ void debugLinkReport(int state)
 
     if (baseThread && servoThread)
     {
+        // average in 0.1 us since the last report: a base run is a few us, a 40 kHz period 25 us
         uint32_t tpu = SystemCoreClock / 1000000;
-        printf("[debug] load: base max %lu/%lu us, %lu overruns; servo max %lu/%lu us, %lu overruns\n",
+        uint32_t bAvg = baseThread->takeAverage() * 10 / tpu, sAvg = servoThread->takeAverage() * 10 / tpu;
+        printf("[debug] load: base avg %lu.%lu max %lu/%lu us, %lu overruns; servo avg %lu.%lu max %lu/%lu us, %lu overruns\n",
+               (unsigned long)(bAvg / 10), (unsigned long)(bAvg % 10),
                (unsigned long)(baseThread->maxTicks / tpu), (unsigned long)(baseThread->periodTicks() / tpu),
                (unsigned long)baseThread->overruns,
+               (unsigned long)(sAvg / 10), (unsigned long)(sAvg % 10),
                (unsigned long)(servoThread->maxTicks / tpu), (unsigned long)(servoThread->periodTicks() / tpu),
                (unsigned long)servoThread->overruns);
     }

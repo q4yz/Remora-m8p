@@ -47,6 +47,9 @@ class pruThread
 		// of a debug build prints what the threads did before it (see bkpLoad()).
 		volatile uint32_t	maxTicks;
 		volatile uint32_t	overruns;
+		volatile uint64_t	sumTicks;			// all runs since takeAverage(), for the average load
+		volatile uint32_t	runs;
+		uint32_t			takeAverage(void);	// average ticks per run since the last call (main loop)
 		uint32_t			periodTicks(void) const { return this->timer->ARR + 1; }
 
 		static void bkpEnable(void);
