@@ -77,6 +77,7 @@ typedef struct {
 	hal_bit_t		*PRUovertemp;		// the board shut down on MCU over temperature (latched until it sends data again)
 	hal_u32_t		*badHeader;			// header of the last rejected reply from the board
 	hal_u32_t		*badCount;			// rejected replies since LinuxCNC started
+	hal_u32_t		*xferErrors;		// transfers the host SPI driver could not complete (timeout, ioctl error)
 	hal_bit_t 		*stepperEnable[JOINTS];
 	int				pos_mode[JOINTS];
 	hal_float_t 	*pos_cmd[JOINTS];			// pin: position command (position units)
@@ -228,7 +229,12 @@ static int rt_rp1lib_init(void);
 static void update_freq(void *arg, long period);
 static void spi_write();
 static void spi_read();
-static void spi_transfer();
+static int spi_transfer();
+
+// consecutive failed host transfers tolerated before the link counts as lost: a single one is a
+// late or preempted thread on the host, not the board (the board drops the partial frame)
+#define XFER_FAIL_MAX	3
+static int xfer_fail_run = 0;
 static CONTROL parse_ctrl_type(const char *ctrl);
 
 /***********************************************************************
@@ -342,6 +348,11 @@ int rtapi_app_main(void)
 			comp_id, "%s.SPI-bad-count", prefix);
 	if (retval != 0) goto error;
 	*(data->badCount) = 0;
+
+	retval = hal_pin_u32_newf(HAL_OUT, &(data->xferErrors),
+			comp_id, "%s.SPI-transfer-errors", prefix);
+	if (retval != 0) goto error;
+	*(data->xferErrors) = 0;
 
 	if (bcm == true)
 	{
@@ -1193,7 +1204,22 @@ void spi_read()
 			// reset rising edge detected, try SPI transfer and reset OR PRU running
 			
 			// Transfer to and from the PRU
-			spi_transfer();
+			if (!spi_transfer())
+			{
+				// the host driver did not complete the frame, rxData holds zeros, not a reply:
+				// skip this cycle, the next one tries again
+				*(data->xferErrors) += 1;
+				if (++xfer_fail_run >= XFER_FAIL_MAX)
+				{
+					*(data->SPIstatus) = 0;
+					rtapi_print_msg(RTAPI_MSG_ERR, "%s: %d SPI transfers in a row failed on the host\n",
+									modname, xfer_fail_run);
+					xfer_fail_run = 0;
+				}
+				data->SPIresetOld = *(data->SPIreset);
+				return;
+			}
+			xfer_fail_run = 0;
 
 			switch (rxData.header)		// only process valid SPI payloads. This rejects bad payloads
 			{
@@ -1342,15 +1368,16 @@ void spi_write()
 	if( *(data->SPIstatus) )
 	{
 		// Transfer to and from the PRU
-		spi_transfer();
+		if (!spi_transfer()) *(data->xferErrors) += 1;
 	}
 
 }
 
 
-void spi_transfer()
+int spi_transfer()
 {
 	// send and receive data to and from the Remora PRU concurrently
+	// returns 0 when the host driver could not complete the frame (gspi: timeout or ioctl error)
 
 	if (bcm == true)
 	{
@@ -1362,8 +1389,9 @@ void spi_transfer()
 	}
 	else if (gspi == true)
 	{
-		gspi_transfer(txData.txBuffer, rxData.rxBuffer, SPIBUFSIZE);
+		return gspi_transfer(txData.txBuffer, rxData.rxBuffer, SPIBUFSIZE);
 	}
+	return 1;
 }
 
 static CONTROL parse_ctrl_type(const char *ctrl)
