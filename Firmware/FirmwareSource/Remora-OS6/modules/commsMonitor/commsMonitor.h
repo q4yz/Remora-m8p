@@ -8,6 +8,7 @@
 // connects). Output modules then drive their configured safe state instead of the LinuxCNC command,
 // so a lost connection can't leave a heater or spindle switched on.
 extern volatile bool commsLost;
+extern volatile bool mcuShutdown;
 
 class CommsMonitor : public Module
 {

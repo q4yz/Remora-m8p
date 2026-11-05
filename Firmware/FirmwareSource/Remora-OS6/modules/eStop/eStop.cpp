@@ -34,6 +34,8 @@ eStop::eStop(volatile int32_t &ptrTxHeader, std::string portAndPin) :
 
 void eStop::update()
 {
+    if (mcuShutdown) return;        // the over temperature header (mcuTemp) stays
+
     if (this->pin->get() == 1)
     {
         *ptrTxHeader = PRU_ESTOP;

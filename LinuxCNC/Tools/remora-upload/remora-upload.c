@@ -51,6 +51,10 @@
 
 #define UPLOAD_INFO_CONFIG  0x01            // config.txt was found at boot
 #define UPLOAD_INFO_ERROR   0x02            // it did not load
+#define UPLOAD_INFO_NO_SD   0x04            // the SD card could not be mounted at boot
+
+#define SD_FORMAT_HINT      "format the board's SD card FAT32 with an MBR partition table (32 GB or smaller, " \
+                            "e.g. with the SD Association's SD Card Formatter) and put firmware.bin on it again"
 
 #define POLL_INTERVAL_US    200             // gap between transfers, lets the board prepare its reply
 #define RESEND_MS           250             // re-send a command that got no reply in this time
@@ -100,6 +104,7 @@ static int spi_fd = -1;
 static int cs_fd = -1;                      // GPIO chip select, -1: the controller's own CS
 static uint32_t spi_speed = 4000000;
 static uint8_t seq;
+static int rx_frames, rx_all_ff, rx_all_00;  // what MISO carried, for the "no reply" diagnosis
 
 
 static const char* error_text(uint8_t error)
@@ -280,6 +285,20 @@ static int spi_transfer(const void* tx, void* rx)
     int result = ioctl(spi_fd, SPI_IOC_MESSAGE(1), &tr);
     if (cs_fd >= 0) cs_set(1);
 
+    if (result >= 0)
+    {
+        const uint8_t* b = rx;
+        int ff = 1, zero = 1;
+        for (int i = 0; i < SPI_BUFF_SIZE; i++)
+        {
+            if (b[i] != 0xff) ff = 0;
+            if (b[i] != 0x00) zero = 0;
+        }
+        rx_frames++;
+        rx_all_ff += ff;
+        rx_all_00 += zero;
+    }
+
     if (result < 0)
     {
         fprintf(stderr, "SPI transfer failed: %s\n", strerror(errno));
@@ -380,6 +399,25 @@ static int linuxcnc_running(void)
 }
 
 
+/* No valid reply: say what MISO showed. All 0xFF means nothing drove MISO (the board's SPI
+ * is not running: no firmware, a boot loop, or MISO / chip select not connected); changing
+ * bytes mean a board answers, but not to upload frames (clock, chip select, old firmware). */
+static void no_reply(void)
+{
+    fprintf(stderr, "no reply from the board - ");
+    if (rx_frames && rx_all_ff == rx_frames)
+        fprintf(stderr, "MISO stays high (every byte 0xFF): the board's SPI is not running.\n"
+                        "  Is the Remora firmware running? A board that resets in a loop (a bad SD card, see its\n"
+                        "  UART console) or a missing MISO / chip select (--spi-cs-pin) wire looks like this.\n"
+                        "  If its SD card was formatted on Linux: " SD_FORMAT_HINT "\n");
+    else if (rx_frames && rx_all_00 == rx_frames)
+        fprintf(stderr, "MISO stays low (every byte 0x00): check the MISO wire and the board's ground\n");
+    else
+        fprintf(stderr, "the board answers, but not to upload frames: check the SPI clock (-s, try 1000000), "
+                        "the chip select (--spi-cs-pin) and that the firmware supports SD upload\n");
+}
+
+
 static uint8_t* read_file(const char* path, long* size)
 {
     // firmware images are a few hundred kB, read the whole file
@@ -424,8 +462,7 @@ static int upload(const uint8_t* data, long size, const char* file_path, const c
 
     if (command(&cmd, &reply, BEGIN_TIMEOUT_MS) < 0)
     {
-        fprintf(stderr, "no reply from the board - check the SPI wiring, the chip select (--spi-cs-pin) "
-                        "and that the firmware supports SD upload\n");
+        no_reply();
         return -1;
     }
     if (reply.status != UPLOAD_ST_OK)
@@ -503,8 +540,7 @@ static int board_info(uint32_t* size, uint32_t* crc, uint8_t* flags)
 
         if (command(&cmd, &reply, BEGIN_TIMEOUT_MS) < 0)
         {
-            fprintf(stderr, "no reply from the board - check the SPI wiring, the chip select (--spi-cs-pin) "
-                            "and that the firmware supports SD upload\n");
+            no_reply();
             return -1;
         }
         if (reply.status == UPLOAD_ST_OK || reply.error != 1 || attempt >= 20) break;
@@ -579,6 +615,15 @@ static int sync_config(const char* file_path)
     int result = 1;
 
     if (board_info(&board_size, &board_crc, &flags) < 0) goto out;
+
+    if (flags & UPLOAD_INFO_NO_SD)
+    {
+        // an upload would fail to mount the card the same way
+        fprintf(stderr, "the board could not read its SD card at boot: " SD_FORMAT_HINT "\n");
+        reboot_board();
+        wait_for_board();
+        goto out;
+    }
 
     if ((flags & UPLOAD_INFO_CONFIG) && board_size == (uint32_t)size && board_crc == local_crc)
     {
@@ -753,6 +798,11 @@ int main(int argc, char** argv)
         uint32_t size, crc;
         uint8_t flags;
         if (board_info(&size, &crc, &flags) < 0) result = 1;
+        else if (flags & UPLOAD_INFO_NO_SD)
+        {
+            printf("the board could not read its SD card at boot: " SD_FORMAT_HINT "\n");
+            result = 1;
+        }
         else if (!(flags & UPLOAD_INFO_CONFIG)) printf("no config.txt on the board\n");
         else printf("config.txt: %u bytes, CRC %08x%s\n", size, crc,
                     (flags & UPLOAD_INFO_ERROR) ? ", did NOT load (JSON or module error)" : ", loaded");

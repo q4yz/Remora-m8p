@@ -7,6 +7,11 @@
 *               thread only issues one SPI_IOC_MESSAGE ioctl per frame and
 *               one GPIO_V2_LINE_SET_VALUES ioctl per reset pin update.
 *
+*               On Allwinner H3 / H6 / H616 (BigTreeTech CB1) the frames run
+*               straight on the SPI registers instead (sunxi_spi.c), spidev
+*               only sets the controller up. Other boards, or a kernel that
+*               does not allow the mapping, keep the ioctl.
+*
 * License: GPL Version 3
 ********************************************************************/
 
@@ -20,6 +25,9 @@
 #include <unistd.h>
 #include <linux/spi/spidev.h>
 #include <linux/gpio.h>
+
+#include "sunxi_spi.h"
+#include "sunxi_spi.c"
 
 // spi-dw.h (Raspberry Pi 5 driver) defines its own copies of the SPI mode flags, drop the
 // kernel's so the Pi drivers included after this file see exactly their own definitions
@@ -46,13 +54,15 @@ static int gspi_reset_fd = -1;
 static int gspi_reset_value = -1;
 
 static int gspi_cs_fd = -1;             // optional GPIO chip select, -1: the controller's own CS
+static int gspi_cs_direct = 0;          // the GPIO chip select is driven on the PIO register by sunxi_spi
 
 static int gspi_line_set(int fd, int value);
 
 
 // Keep the SPI controller powered between transfers. With runtime PM the
 // controller may otherwise be suspended between frames and resumed by the
-// next transfer, which adds latency. Best effort, needs root.
+// next transfer, which adds latency. Best effort, needs root; the register
+// driver (sunxi_spi) checks that it worked.
 static void gspi_keep_powered(const char *device)
 {
     const char *name = strrchr(device, '/');
@@ -98,7 +108,7 @@ const char *gspi_find_device(void)
 }
 
 
-int gspi_init(const char *device, uint32_t speed_hz)
+int gspi_init(const char *device, uint32_t speed_hz, int registers)
 {
     uint8_t mode = 0;           // SPI mode 0: CPOL 0, CPHA 0
     uint8_t bits = 8;
@@ -131,6 +141,31 @@ int gspi_init(const char *device, uint32_t speed_hz)
     gspi_keep_powered(device);
 
     rtapi_print_msg(RTAPI_MSG_ERR, "gspi: using %s, mode 0, %u Hz\n", device, gspi_speed);
+
+    if (registers != GSPI_REGISTERS_NEVER)
+    {
+        int bus = 0, cs = 0;
+        const char *name = strrchr(device, '/');
+
+        name = name ? name + 1 : device;
+        if (sscanf(name, "spidev%d.%d", &bus, &cs) != 2) cs = 0;
+
+        if (sunxi_spi_init(device, gspi_fd, gspi_speed, cs))
+        {
+            rtapi_print_msg(RTAPI_MSG_ERR, "gspi: frames run on the SPI registers, spidev only for the setup\n");
+        }
+        else if (registers == GSPI_REGISTERS_REQUIRED)
+        {
+            rtapi_print_msg(RTAPI_MSG_ERR, "gspi: spi_backend=sunxi, but the SPI registers are not usable\n");
+            gspi_close();
+            return 0;
+        }
+        else
+        {
+            rtapi_print_msg(RTAPI_MSG_ERR, "gspi: frames use the spidev ioctl\n");
+        }
+    }
+
     return 1;
 }
 
@@ -138,6 +173,17 @@ int gspi_init(const char *device, uint32_t speed_hz)
 int gspi_transfer(const void *txbuf, void *rxbuf, uint32_t len)
 {
     struct spi_ioc_transfer tr;
+
+    if (sunxi_spi_active())
+    {
+        int ok;
+
+        // a GPIO chip select that sunxi_spi cannot drive itself (not on an Allwinner PIO)
+        if (gspi_cs_fd >= 0 && !gspi_cs_direct) gspi_line_set(gspi_cs_fd, 0);
+        ok = sunxi_spi_transfer(txbuf, rxbuf, len);
+        if (gspi_cs_fd >= 0 && !gspi_cs_direct) gspi_line_set(gspi_cs_fd, 1);
+        return ok;
+    }
 
     memset(&tr, 0, sizeof(tr));
     tr.tx_buf = (unsigned long)txbuf;
@@ -173,6 +219,8 @@ int gspi_transfer(const void *txbuf, void *rxbuf, uint32_t len)
 
 void gspi_close(void)
 {
+    sunxi_spi_close();
+
     if (gspi_fd >= 0)
     {
         close(gspi_fd);
@@ -298,12 +346,25 @@ int gspi_cs_init(const char *chip, const char *pin)
 {
     // chip select is active low, idle high until the first frame
     gspi_cs_fd = gspi_claim_output(chip, pin, "chip select", 1);
-    return gspi_cs_fd >= 0;
+    if (gspi_cs_fd < 0) return 0;
+
+    // with the register driver the chip select goes on the PIO register too, no ioctl per frame.
+    // The kernel keeps the line claimed as an output, sunxi_spi only writes its data bit.
+    if (sunxi_spi_active())
+    {
+        int chip_fd = rtapi_open_as_root(chip, O_RDWR);
+        gspi_cs_direct = sunxi_spi_cs_init(chip_fd, gspi_parse_pin(pin));
+        if (chip_fd >= 0) close(chip_fd);
+    }
+    return 1;
 }
 
 
 void gspi_cs_close(void)
 {
+    sunxi_spi_cs_close();
+    gspi_cs_direct = 0;
+
     if (gspi_cs_fd >= 0)
     {
         gspi_line_set(gspi_cs_fd, 1);

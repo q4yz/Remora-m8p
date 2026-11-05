@@ -38,6 +38,11 @@
     board, which also lets the SD bootloader flash a new firmware.bin.
 ************************************************************************/
 
+// The board's SD card bus, driven only while the card is in use (the M8P shares it with the driver
+// sockets, see main.cpp). Weak no-ops for boards that don't need it.
+void sdBusAcquire(void);
+void sdBusRelease(void);
+
 #define UPLOAD_DATA_MAX     44              // data bytes per frame
 #define UPLOAD_BUF_SIZE     8192            // RAM buffer flushed to the SD card in one go
 #define UPLOAD_MAX_SIZE     (1024 * 1024)   // sanity limit on the file size
@@ -58,6 +63,7 @@
 // INFO reply flags (spare0)
 #define UPLOAD_INFO_CONFIG  0x01            // config.txt was found at boot
 #define UPLOAD_INFO_ERROR   0x02            // it did not load (JSON or board error)
+#define UPLOAD_INFO_NO_SD   0x04            // the SD card could not be mounted at boot (format)
 
 // reply status
 #define UPLOAD_ST_OK        1
@@ -149,7 +155,7 @@ class SDUpload
     public:
 
         // config.txt as loaded at boot, reported by UPLOAD_CMD_INFO
-        void setConfigInfo(bool found, bool error, uint32_t size, uint32_t crc);
+        void setConfigInfo(bool found, bool error, bool sdError, uint32_t size, uint32_t crc);
 
         SDUpload(RemoraComms*, FATFileSystem*, BlockDevice*, volatile txData_t*, void (*onStart)(void));
 

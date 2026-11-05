@@ -58,6 +58,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 // modules
 #include "module.h"
 #include "commsMonitor.h"
+#include "mcuTemp.h"
 #include "blink.h"
 #include "debug.h"
 #include "digitalPin.h"
@@ -105,6 +106,7 @@ volatile bool PRUreset;
 bool configError = false;
 bool threadsRunning = false;
 bool configFound = false;           // config.txt as read at boot, reported to remora-upload --sync
+bool sdCardError = false;           // the SD card could not be mounted at boot (not FAT, GPT, exFAT ...)
 uint32_t configSize = 0;
 uint32_t configCrc = 0;
 
@@ -178,6 +180,39 @@ volatile uint16_t* ptrOutputs;
 
 #endif
 
+#if defined TARGET_MANTA8
+#include "pinmap.h"
+#include "PeripheralPins.h"
+
+// The SD card's SPI1 lines (PA5 SCK, PA6 MISO, PA7 MOSI, PA8 CS) also run to the stepper driver
+// sockets. mbed's SDBlockDevice::deinit() leaves them driven for good, so between card accesses they
+// go to analog (high impedance, the reset state): the MCU never drives a line a driver module or a
+// jumper may hold. The card has its own pull-up on CS, it stays deselected.
+void sdBusRelease(void)
+{
+    GPIO_InitTypeDef g = {0};
+    g.Pin = GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8;
+    g.Mode = GPIO_MODE_ANALOG;
+    g.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOA, &g);
+}
+
+void sdBusAcquire(void)
+{
+    // CS high (deselected) before SCK and MOSI come back
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+    GPIO_InitTypeDef g = {0};
+    g.Pin = GPIO_PIN_8;
+    g.Mode = GPIO_MODE_OUTPUT_PP;
+    g.Pull = GPIO_NOPULL;
+    g.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOA, &g);
+    pinmap_pinout(PA_5, PinMap_SPI_SCLK);
+    pinmap_pinout(PA_6, PinMap_SPI_MISO);
+    pinmap_pinout(PA_7, PinMap_SPI_MOSI);
+}
+#endif
+
 // Watchdog
 Watchdog& watchdog = Watchdog::get_instance();
 
@@ -225,7 +260,9 @@ void readJsonConfig()
     int err = fileSystem.mount(&blockDevice);
     printf("%s\n", (err ? "Fail :(" : "OK"));
     if (err) {
-        printf("No filesystem found... ");
+        // reported to remora-upload over SPI, the board keeps running without modules
+        printf("ERROR: SD card not readable (%d): format it FAT32 with an MBR partition table\n", err);
+        sdCardError = true;
         fflush(stdout);
      }
 
@@ -292,11 +329,115 @@ void setup()
     #if defined TARGET_MANTA8
     // release the SD card, its SPI bus is shared with the TMC drivers
     blockDevice.deinit();
+    sdBusRelease();
     #endif
 
     // initialise the Remora comms 
     comms->init();
     comms->start();
+}
+
+
+// Pin names as the STM32 Pin class parses them ("PA_2", "PC_15"). A module with any other pin name
+// would run with an unconfigured pin and hard fault once the threads start, a boot loop in which
+// config.txt can no longer be replaced over SPI.
+#if defined(TARGET_STM32F1)
+#define CONFIG_PIN_LAST_PORT    'E'
+#elif defined(TARGET_STM32G0)
+#define CONFIG_PIN_LAST_PORT    'F'
+#elif defined(TARGET_STM32F4) || defined(TARGET_STM32H7)
+#define CONFIG_PIN_LAST_PORT    'H'
+#endif
+
+#ifdef CONFIG_PIN_LAST_PORT
+// Pins the board itself uses: a module on one of them would make the MCU drive a line another driver
+// already drives (CB1 / Pi SPI, CAN transceiver, USB hub, crystal) - two outputs against each other
+// is how a GPIO, or the whole MCU, burns out - or break the firmware's own link and console.
+struct reservedPin_t { const char* pin; const char* use; };
+static const reservedPin_t reservedPins[] = {
+#if defined TARGET_MANTA8
+    { "PB_11", "SPI link to the CB1 / Pi (MOSI)" }, { "PB_12", "SPI link to the CB1 / Pi (CS)" },
+    { "PB_13", "SPI link to the CB1 / Pi (SCK)" },  { "PB_14", "SPI link to the CB1 / Pi (MISO)" },
+    { "PD_12", "CAN transceiver (RX)" },            { "PD_13", "CAN transceiver (TX)" },
+    { "PA_5",  "SD card (SCK)" },  { "PA_6", "SD card (MISO)" }, { "PA_7", "SD card (MOSI)" }, { "PA_8", "SD card (CS)" },
+    { "PA_11", "USB" },            { "PA_12", "USB" },
+    { "PA_13", "SWD" },            { "PA_14", "SWD" },
+    { "PF_0",  "8 MHz crystal" },  { "PF_1",  "8 MHz crystal" },
+    { "PE_8",  "console UART (TX)" }, { "PE_9", "console UART (RX)" },
+#endif
+    { nullptr, nullptr }
+};
+
+static const char* reservedPinUse(const char* pin)
+{
+    for (const reservedPin_t* r = reservedPins; r->pin; r++)
+    {
+        if (!strcmp(pin, r->pin)) return r->use;
+    }
+    return nullptr;
+}
+
+static bool validPinName(const char* pin)
+{
+    if (pin[0] != 'P' || pin[1] < 'A' || pin[1] > CONFIG_PIN_LAST_PORT || pin[2] != '_') return false;
+    if (pin[3] < '0' || pin[3] > '9') return false;
+    if (pin[4] == '\0') return true;
+    if (pin[4] < '0' || pin[4] > '9' || pin[5] != '\0') return false;
+    return (pin[3] - '0') * 10 + (pin[4] - '0') <= 15;
+}
+
+// every string value of a key with "pin" in its name, also in nested objects (Thermistor)
+static bool checkModulePins(JsonObject obj, const char* comment)
+{
+    bool ok = true;
+
+    for (JsonPair kv : obj)
+    {
+        const char* key = kv.key().c_str();
+
+        if (kv.value().is<JsonObject>())
+        {
+            ok &= checkModulePins(kv.value().as<JsonObject>(), comment);
+        }
+        else if (kv.value().is<const char*>() && (strstr(key, "Pin") || strstr(key, "pin")))
+        {
+            const char* pin = kv.value().as<const char*>();
+            const char* use;
+            if (!validPinName(pin))
+            {
+                printf("ERROR: module \"%s\": \"%s\": \"%s\" is not a pin name like \"PA_2\"\n", comment, key, pin);
+                ok = false;
+            }
+            else if ((use = reservedPinUse(pin)) != nullptr)
+            {
+                printf("ERROR: module \"%s\": \"%s\": %s is used by the board: %s\n", comment, key, pin, use);
+                ok = false;
+            }
+        }
+    }
+    return ok;
+}
+#endif
+
+static void checkConfigPins()
+{
+#ifdef CONFIG_PIN_LAST_PORT
+    bool ok = true;
+    JsonArray Modules = doc["Modules"];
+
+    for (JsonArray::iterator it=Modules.begin(); it!=Modules.end(); ++it)
+    {
+        JsonObject m = *it;
+        ok &= checkModulePins(m, m["Comment"] | "?");
+    }
+
+    if (!ok)
+    {
+        // like a missing config.txt: no modules, the SPI link stays up for a corrected upload
+        printf("ERROR: invalid pin name(s) in config.txt, no modules loaded\n");
+        configError = true;
+    }
+#endif
 }
 
 
@@ -329,6 +470,8 @@ void deserialiseJSON()
             configError = true;
             break;
     }
+
+    if (!configError) checkConfigPins();
 }
 
 
@@ -509,6 +652,9 @@ void loadModules()
     // outputs go to their safe state while there is no SPI data from LinuxCNC
     servoThread->registerModule(new CommsMonitor(comms));
 
+    // MCU over temperature shutdown, always on (an "MCU Temperature" module only adds the report)
+    startMcuTempGuard();
+
     JsonArray Modules = doc["Modules"];
 
     // create objects from json data
@@ -563,6 +709,10 @@ void loadModules()
             else if (!strcmp(type,"Temperature"))
             { 
                 createTemperature();
+            }
+            else if (!strcmp(type,"MCU Temperature"))
+            {
+                createMcuTemperature();
             }
             else if (!strcmp(type,"Switch"))
             {
@@ -688,7 +838,7 @@ int main()
     debugBootInfo();
 #endif
 
-    watchdog.start(2000);
+    // the watchdog starts in the SETUP state, right after the SD card is read
 
     while(1)
     {
@@ -739,10 +889,17 @@ int main()
             prevState = currentState;
 
             readJsonConfig();
+
+            // right after the SD card, before any output pin is set up: a slow card (mount retries
+            // on a badly formatted one) must not reset the board in a loop, which would hide the
+            // error from remora-upload. Everything that can drive a heater, fan or motor runs
+            // under the watchdog from here on.
+            watchdog.start(2000);
+
             setup();
             deserialiseJSON();
 #ifdef SD_UPLOAD
-            sdUpload.setConfigInfo(configFound, configError, configSize, configCrc);
+            sdUpload.setConfigInfo(configFound, configError, sdCardError, configSize, configCrc);
 #endif
 #ifdef CAN_HUB
             configCan();
@@ -888,6 +1045,8 @@ int main()
       }
 
     comms->SPItasks();
+
+    reportMcuTemp();
 
 #ifdef CAN_HUB
     // remote joints: the new frequency commands go to the nodes right after each WRITE frame

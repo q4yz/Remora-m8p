@@ -17,9 +17,14 @@
 #define GSPI_DEFAULT_GPIOCHIP   "/dev/gpiochip0"
 #define GSPI_DEFAULT_FREQ       8000000         // 8 MHz, safe with jumper wires
 
+// gspi_init registers: run the frames on the SPI registers (Allwinner, sunxi_spi.c)?
+#define GSPI_REGISTERS_NEVER    0               // always the spidev ioctl
+#define GSPI_REGISTERS_AUTO     1               // registers if possible, else spidev
+#define GSPI_REGISTERS_REQUIRED 2               // registers or fail
+
 // SPI link
 const char *gspi_find_device(void);     // first /dev/spidevB.C that exists, NULL if none
-int  gspi_init(const char *device, uint32_t speed_hz);
+int  gspi_init(const char *device, uint32_t speed_hz, int registers);
 int  gspi_transfer(const void *txbuf, void *rxbuf, uint32_t len);
 void gspi_close(void);
 

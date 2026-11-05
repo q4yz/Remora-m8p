@@ -77,7 +77,8 @@ void Stepgen::makePulses()
 {
 	int32_t stepNow = 0;
 
-	this->isEnabled = ((*(this->ptrJointEnable) & this->mask) != 0);
+	// MCU over temperature shutdown: no steps, drivers disabled, whatever LinuxCNC still sends
+	this->isEnabled = !mcuShutdown && ((*(this->ptrJointEnable) & this->mask) != 0);
 
 	if (this->isEnabled == true)  												// this Step generator is enables so make the pulses
 	{
