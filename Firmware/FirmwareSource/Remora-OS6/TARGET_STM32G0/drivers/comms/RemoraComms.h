@@ -12,6 +12,7 @@
 #define REJECT_REALIGN      16      // consecutive bad headers before the DMA is re-aligned
 #define EDGE_REALIGN        3       // consecutive NSS edges in the middle of a DMA frame before re-aligning
 #define IDLE_REARM_MS       20      // bus quiet this long: SPI and DMA are re-armed for the next frame
+#define FRAME_QUEUE         4       // frames the NSS interrupt can hold for SPItasks() (one slot stays free)
 
 class RemoraComms : public Module
 {
@@ -25,8 +26,12 @@ class RemoraComms : public Module
         volatile rxData_t*  ptrRxData;
         volatile txData_t*  ptrTxData;
         rxData_t            spiRxBuffer;        // DMA target, rewritten by every transfer
-        rxData_t            frameBuffer;        // copy taken in the NSS interrupt, read by SPItasks()
-        volatile bool       frameTorn;          // the NSS edge did not land on a DMA frame boundary
+        // frames copied in the NSS interrupt, taken by SPItasks(): READ and WRITE arrive back to back,
+        // a single slot lost the READ whenever the main loop was slower than the gap between them
+        rxData_t            frameQueue[FRAME_QUEUE];
+        volatile bool       frameTorn[FRAME_QUEUE]; // the NSS edge did not land on a DMA frame boundary
+        volatile uint8_t    qHead;              // next slot the interrupt fills
+        volatile uint8_t    qTail;              // next slot SPItasks() takes
         volatile uint32_t   lastEdgeTick;       // HAL tick of the last NSS edge
         volatile bool       rearmed;            // re-armed since the last NSS edge
         uint8_t             tornCnt;
@@ -82,6 +87,7 @@ class RemoraComms : public Module
         volatile uint32_t   dbgTimeouts;        // DMA did not complete a frame in time
         volatile int32_t    dbgLastBad;         // header of the last rejected frame
         volatile uint32_t   dbgRearms;          // re-arms after a quiet bus
+        volatile uint32_t   dbgLost;            // frames dropped because the queue was full
         volatile uint32_t   dbgTorn;            // frames dropped: NSS edge off the frame boundary or
                                                 // the next frame already started during the copy
 };
