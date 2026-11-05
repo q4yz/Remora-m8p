@@ -36,6 +36,12 @@ RemoraComms::RemoraComms(volatile rxData_t* ptrRxData, volatile txData_t* ptrTxD
     this->initialised = false;
     this->dbgFrames = this->dbgReads = this->dbgWrites = this->dbgRejects = this->dbgTimeouts = 0;
     this->dbgLastBad = 0;
+    this->dbgTorn = 0;
+    this->dbgRearms = 0;
+    this->lastEdgeTick = 0;
+    this->rearmed = true;
+    this->frameTorn = false;
+    this->tornCnt = 0;
 
     if (this->spiType != SPI2 || this->interruptPin != PB_12)
     {
@@ -160,53 +166,84 @@ void RemoraComms::start()
 
 void RemoraComms::NSSinterrupt()
 {
-    // NSS / CS has gone high, packet received
+    // NSS / CS has gone high, a frame is complete. The frame is copied here, not in the main loop:
+    // the host may start the next frame right away (two frames per servo period, at a low SPI clock
+    // there is hardly a gap between them) and the circular DMA then overwrites the buffer while the
+    // main loop is still reading it - the torn READ / WRITE headers.
+
+    // the last byte may still be on its way from the SPI FIFO to memory, give the DMA a moment
+    uint32_t remaining = __HAL_DMA_GET_COUNTER(&this->hdma_spi_rx);
+    for (int i = 0; i < 64 && remaining != SPI_BUFF_SIZE; i++)
+    {
+        remaining = __HAL_DMA_GET_COUNTER(&this->hdma_spi_rx);
+    }
+
+    bool torn = (remaining != SPI_BUFF_SIZE);
+
+    if (!torn)
+    {
+        const volatile uint32_t* src = (const volatile uint32_t*)this->spiRxBuffer.rxBuffer;
+        uint32_t* dst = (uint32_t*)this->frameBuffer.rxBuffer;
+        for (int i = 0; i < SPI_BUFF_SIZE / 4; i++)
+        {
+            dst[i] = src[i];
+        }
+        // the next frame started during the copy: the copy may hold bytes of both frames
+        torn = (__HAL_DMA_GET_COUNTER(&this->hdma_spi_rx) != SPI_BUFF_SIZE);
+    }
+
+    this->frameTorn = torn;
+    this->lastEdgeTick = HAL_GetTick();
+    this->rearmed = false;
     this->NSS = true;
 }
 
 
 void RemoraComms::SPItasks()
 {
+    // The reply (TX) side can lose its byte alignment without the receive side noticing: the
+    // host then reads a header shifted by a byte or a few bits (00646174, bcbcbcbc, ...), drops
+    // SPI-status and stops clocking, and every E-stop reset would meet the same shifted reply.
+    // Whenever the bus has been quiet for IDLE_REARM_MS the SPI (bit counter, FIFOs) and both
+    // DMA channels start over from byte 0, so the next frame is aligned in both directions.
+    // LinuxCNC clocks every servo period (1 ms), this never runs while the link is up.
+    if (!this->NSS && !this->rearmed && (HAL_GetTick() - this->lastEdgeTick) > IDLE_REARM_MS)
+    {
+        this->rearmed = true;
+        this->dbgRearms++;
+        this->restartDMA();
+    }
+
     if (this->NSS)
     {
+        // take the frame the interrupt copied, a newer edge may overwrite it while we work
+        __disable_irq();
         this->NSS = false;
+        bool torn = this->frameTorn;
+        rxData_t frame = this->frameBuffer;
+        __enable_irq();
+
         this->dbgFrames++;
 
-        this->DMArxCnt = 0;
-        this->ticksStart = HAL_GetTick();
-
-        // wait for DMA to complete and break if DMA is not complete in time
-        while (this->DMArxCnt != SPI_BUFF_SIZE)
+        if (torn)
         {
-            this->DMArxCnt = __HAL_DMA_GET_COUNTER(&this->hdma_spi_rx);
-            this->ticks = HAL_GetTick() - this->ticksStart;
-
-            if (this->ticks > 2)
-            {
-                this->resetSPI = true;
-                this->dbgTimeouts++;
-                break;
-            }
-        }
-
-        if (this->resetSPI)
-        {
-            // the frame boundary is lost: the DMA was started in the middle of a frame (the host
-            // was already clocking when the board booted) or a byte went missing. The DMA is
-            // circular, every following frame would be shifted, so drop this one and re-align on
-            // the next NSS edge, in normal operation as in upload mode. Counted in dbgTimeouts,
+            // the NSS edge came in the middle of a DMA frame: once in a while the main loop or a
+            // higher priority interrupt was late, the frame is dropped. Edge after edge means the
+            // DMA lost the frame boundary (started mid frame at boot, a byte missing), every
+            // following frame would be shifted: re-align. Counted in dbgTorn / dbgTimeouts,
             // no printf (it blocks the main loop and costs more frames)
-            // While LinuxCNC is running (CommsStatus) a restart would send it a bad payload and E-stop
-            // the machine, there a shifted DMA shows up as bad headers and is handled below
-            this->resetSPI = false;
-            if (this->uploadMode || !this->CommsStatus)
+            this->dbgTorn++;
+            if (++this->tornCnt >= EDGE_REALIGN)
             {
+                this->tornCnt = 0;
+                this->dbgTimeouts++;
                 this->restartDMA();
             }
             return;
         }
+        this->tornCnt = 0;
 
-        switch (this->spiRxBuffer.header)
+        switch (frame.header)
         {
             case PRU_READ:
                 this->dbgReads++;
@@ -226,7 +263,7 @@ void RemoraComms::SPItasks()
 
                 for (int i = 0; i < SPI_BUFF_SIZE; i++)
                 {
-                    this->ptrRxData->rxBuffer[i] = this->spiRxBuffer.rxBuffer[i];
+                    this->ptrRxData->rxBuffer[i] = frame.rxBuffer[i];
                 }
 
                 __enable_irq();
@@ -237,7 +274,7 @@ void RemoraComms::SPItasks()
                 // copy the frame now, before the next transfer overwrites the DMA buffer
                 for (int i = 0; i < SPI_BUFF_SIZE; i++)
                 {
-                    this->uploadRxBuffer.rxBuffer[i] = this->spiRxBuffer.rxBuffer[i];
+                    this->uploadRxBuffer.rxBuffer[i] = frame.rxBuffer[i];
                 }
                 this->uploadFrame = true;
                 break;
@@ -245,7 +282,7 @@ void RemoraComms::SPItasks()
             default:
                 this->rejectCnt++;
                 this->dbgRejects++;
-                this->dbgLastBad = this->spiRxBuffer.header;
+                this->dbgLastBad = frame.header;
                 if (this->rejectCnt > 5)
                 {
                     this->SPIdataError = true;
@@ -322,6 +359,8 @@ void RemoraComms::restartDMA()
     // re-initialise the SPI and DMA handles without resetting the TX buffer header like start() does
     this->init();
     this->NSS = false;
+    this->frameTorn = false;
+    this->rearmed = true;
     HAL_SPI_TransmitReceive_DMA(&this->spiHandle, (uint8_t *)this->ptrTxData->txBuffer, (uint8_t *)this->spiRxBuffer.rxBuffer, SPI_BUFF_SIZE);
     HAL_NVIC_DisableIRQ(DMA1_Channel2_3_IRQn);
 }
