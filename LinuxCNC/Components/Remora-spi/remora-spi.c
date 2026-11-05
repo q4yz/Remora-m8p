@@ -75,6 +75,8 @@ typedef struct {
 	bool			SPIresetOld;
 	hal_bit_t		*SPIstatus;
 	hal_bit_t		*PRUovertemp;		// the board shut down on MCU over temperature (latched until it sends data again)
+	hal_u32_t		*badHeader;			// header of the last rejected reply from the board
+	hal_u32_t		*badCount;			// rejected replies since LinuxCNC started
 	hal_bit_t 		*stepperEnable[JOINTS];
 	int				pos_mode[JOINTS];
 	hal_float_t 	*pos_cmd[JOINTS];			// pin: position command (position units)
@@ -329,6 +331,17 @@ int rtapi_app_main(void)
 			comp_id, "%s.PRU-overtemp", prefix);
 	if (retval != 0) goto error;
 	*(data->PRUovertemp) = 0;
+
+	// the last rejected reply, readable with halcmd whatever the rtapi logging does
+	retval = hal_pin_u32_newf(HAL_OUT, &(data->badHeader),
+			comp_id, "%s.SPI-bad-header", prefix);
+	if (retval != 0) goto error;
+	*(data->badHeader) = 0;
+
+	retval = hal_pin_u32_newf(HAL_OUT, &(data->badCount),
+			comp_id, "%s.SPI-bad-count", prefix);
+	if (retval != 0) goto error;
+	*(data->badCount) = 0;
 
 	if (bcm == true)
 	{
@@ -1262,6 +1275,8 @@ void spi_read()
 				default:
 					// we have received a BAD payload from the PRU
 					*(data->SPIstatus) = 0;
+					*(data->badHeader) = (uint32_t)rxData.header;
+					*(data->badCount) += 1;
 
 					rtapi_print("Bad SPI payload = %x\n", rxData.header);
 					//for (i = 0; i < SPIBUFSIZE; i++) {
