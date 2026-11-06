@@ -3,22 +3,26 @@
 # binaries always match the source. Run it before committing a change to shared code.
 #
 #   bash Firmware/build.sh            build all, copy the binaries
-#   bash Firmware/build.sh MANTA8     only the targets whose name contains MANTA8
+#   bash Firmware/build.sh MANTA8     only the target named MANTA8 (names in TARGETS below)
 #   bash Firmware/build.sh --check    build all, copy nothing (compile check)
+#   bash Firmware/build.sh --out DIR  also put every binary in DIR as <name>.bin (CI artifacts)
 #
 # Needs the mbed CLI (mbed-cli 1) and the GNU Arm toolchain on the PATH.
 
-cd "$(dirname "$0")/FirmwareSource/Remora-OS6" || exit 1
-BIN=../../FirmwareBin
-
 copy=1
 filter=""
-for a in "$@"; do
-    case "$a" in
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
         --check) copy=0 ;;
-        *) filter="$a" ;;
+        --out) shift; mkdir -p "$1" && out=$(cd "$1" && pwd) ;;
+        *) filter="$1" ;;
     esac
+    shift
 done
+
+cd "$(dirname "$0")/FirmwareSource/Remora-OS6" || exit 1
+BIN=../../FirmwareBin
 
 # name | mbed target | extra mbed options | build folder | FirmwareBin folder ("-": compile check only)
 TARGETS=(
@@ -34,7 +38,8 @@ TARGETS=(
 failed=()
 for t in "${TARGETS[@]}"; do
     IFS='|' read -r name target opts build dest <<< "$t"
-    [ -n "$filter" ] && [[ "$name" != *"$filter"* ]] && continue
+    [ -n "$filter" ] && [ "$name" != "$filter" ] && continue
+    built=$((built + 1))
 
     echo "== $name"
     log=$(mktemp)
@@ -49,6 +54,7 @@ for t in "${TARGETS[@]}"; do
             cp "$build/firmware.bin" "$BIN/$dest/firmware.bin"
             echo "   -> FirmwareBin/$dest/firmware.bin"
         fi
+        [ -n "$out" ] && cp "$build/firmware.bin" "$out/$name.bin"
     else
         grep -E "\[Error\]|error:" "$log" | head -10
         failed+=("$name")
@@ -56,6 +62,10 @@ for t in "${TARGETS[@]}"; do
     rm -f "$log"
 done
 
+if [ "${built:-0}" = 0 ]; then
+    echo "no target named '$filter'"
+    exit 1
+fi
 if [ ${#failed[@]} -gt 0 ]; then
     echo "FAILED: ${failed[*]}"
     exit 1
