@@ -18,7 +18,7 @@ void createRCServo()
 
     // slow module with 10 hz update
     int updateHz = 10;
-    Module* rcservo = new RCServo(*ptrSetPoint[sp], pin, PRU_BASEFREQ, updateHz);
+    Module* rcservo = new RCServo(*ptrSetPoint[sp], pin, base_freq, updateHz);
     baseThread->registerModule(rcservo);
 }
 

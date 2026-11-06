@@ -85,7 +85,7 @@ Encoder::Encoder(volatile float &ptrEncoderCount, volatile uint16_t &ptrData, in
     this->pinB = new Pin(this->ChB, INPUT, this->modifier);			// create Pin
     this->pinI = new Pin(this->Index, INPUT, this->modifier);		// create Pin
     this->hasIndex = true;
-    this->indexPulse = (PRU_BASEFREQ / PRU_SERVOFREQ) * 3;          // output the index pulse for 3 servo thread periods so LinuxCNC sees it
+    this->indexPulse = (base_freq / servo_freq) * 3;          // output the index pulse for 3 servo thread periods so LinuxCNC sees it
     this->indexCount = 0;
 	this->count = 0;								                // initialise the count to 0
     this->pulseCount = 0;                                           // number of base thread periods to pulse the index output    
