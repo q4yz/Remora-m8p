@@ -56,7 +56,8 @@ def find_cpu_temp_file(thermal_dir=THERMAL_DIR):
 
     A Pi has one zone; the CB1's H616 has four (cpu, gpu, ve, ddr) whose
     numbering depends on the kernel's device tree, so the zone is picked
-    by its ``type``, not its number. No match falls back to zone 0.
+    by its ``type``, not its number: an exact match first, then any type
+    containing "cpu". No match falls back to zone 0.
     """
     zones = sorted(
         glob.glob(os.path.join(thermal_dir, "thermal_zone*")),
@@ -73,6 +74,11 @@ def find_cpu_temp_file(thermal_dir=THERMAL_DIR):
         for zone in zones:
             if types.get(zone) == wanted:
                 return os.path.join(zone, "temp")
+    # Vendor kernels spell it differently ("cpu_thermal_zone", "cpu0_thermal"
+    # ...): any zone whose type names the CPU, before falling back.
+    for zone in zones:
+        if "cpu" in types.get(zone, ""):
+            return os.path.join(zone, "temp")
     return os.path.join(thermal_dir, "thermal_zone0", "temp")
 
 

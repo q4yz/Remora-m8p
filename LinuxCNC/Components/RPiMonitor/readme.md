@@ -53,9 +53,9 @@ The temperature is read from the CPU's thermal zone under `/sys/class/thermal`, 
 | Board | SoC | Zones | Used |
 |---|---|---|---|
 | Raspberry Pi 3 / 4 / 5 | Broadcom | `cpu-thermal` only | `cpu-thermal` |
-| BTT CB1 | Allwinner H616 | `cpu-thermal`, `gpu-thermal`, `ve-thermal`, `ddr-thermal` (order depends on the kernel) | `cpu-thermal` |
+| BTT CB1 | Allwinner H616 | CPU, GPU, video engine, DDR (order depends on the kernel: zone 2 is the CPU on the BTT image, zone 0 the GPU) | the CPU zone |
 
-Matched types, best first: `cpu-thermal`, `cpu_thermal`, `cpu0-thermal`, `soc-thermal`, `soc_thermal`. If none matches, `thermal_zone0` is used, as before. The component prints the file it reads on startup.
+Matched types, best first: `cpu-thermal`, `cpu_thermal`, `cpu0-thermal`, `soc-thermal`, `soc_thermal`, then any type containing `cpu` (vendor kernels, e.g. `cpu_thermal_zone`). If none matches, `thermal_zone0` is used, as before. The component prints the file it reads on startup.
 
 ### TESTING OFF-PI
 
