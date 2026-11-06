@@ -92,6 +92,7 @@ static void run(CanHub& hub, std::vector<Node*> nodes, uint32_t& now, uint32_t m
             hub.serviceJoints(now, !simSafe, simSafe, simFreq, simEnable, simFeedback);
             hub.writeVariables(simPv);
             hub.servicePwm(now, simSp);
+            hub.serviceRgb(now, simSp);
         }
         for (Node* n : nodes) {
             simIo = &n->io;
@@ -662,6 +663,81 @@ int main(int argc, char** argv) {
         CHECK(hub.addPwm(1, "PA_1", 2, 255, 1000, 0) && hub.addPwm(1, "PA_2", 3, 255, 1000, 0) &&
               hub.addPwm(1, "PA_3", 4, 255, 1000, 0));
         CHECK(!hub.addPwm(1, "PA_4", 5, 255, 1000, 0));                                   /* 4 per node */
+    }
+    else if (sc == "rgb" || sc == "rgb-lost") {
+        /* SB2209 Stealthburner on PD_3: logo LED 1 on SP[4], nozzle LEDs 2-3 on SP[5], GRB */
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        const uint8_t PD3 = CAN_PIN(3, 3);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addRgb(1, "PD_3", 4, 1, 1, 3, "GRB"));
+        CHECK(hub.addRgb(1, "PD_3", 5, 2, 2, 3, "GRB"));
+        run(hub, {&a}, now, 1500);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getRgbCount() == 2 && a.node->getRgbChainCount() == 1);
+        CHECK(a.io.rgbLeds[PD3] == 3 && a.io.rgbSends[PD3] >= 1);
+        auto led = [&](int i) { const uint8_t* b = &a.io.rgb[PD3][3 * i]; return (uint32_t)(b[0] << 16 | b[1] << 8 | b[2]); };
+        CHECK(led(0) == 0 && led(1) == 0 && led(2) == 0);                                /* off without LinuxCNC */
+        simSafe = false;
+        simSp[4] = 16728064.0f;                                                           /* M150 R255 G64 B0 */
+        simSp[5] = 255.0f;                                                                /* blue */
+        run(hub, {&a}, now, 50);
+        printf("  LEDs (GRB bytes): %06x %06x %06x\n", led(0), led(1), led(2));
+        CHECK(a.node->getRgbColor(0) == 0xFF4000 && a.node->getRgbColor(1) == 0x0000FF);
+        CHECK(led(0) == 0x40FF00 && led(1) == 0x0000FF && led(2) == 0x0000FF);
+        int sends = a.io.rgbSends[PD3];
+        run(hub, {&a}, now, 3000);                                                        /* no change: refresh */
+        printf("  3 s unchanged: %d transfers\n", a.io.rgbSends[PD3] - sends);
+        CHECK(a.io.rgbSends[PD3] - sends >= 2 && a.io.rgbSends[PD3] - sends <= 4);
+        uint32_t frames = a.node->getRgbFrames();
+        for (int i = 0; i < 100; i++) { simSp[4] = (float)(i * 1000); run(hub, {&a}, now, 1); }    /* every servo period */
+        printf("  colour changing every ms for 100 ms: %u RGB frames\n", a.node->getRgbFrames() - frames);
+        CHECK(a.node->getRgbFrames() - frames <= 6);
+        simSp[4] = -5.0f; simSp[5] = 99999999.0f; run(hub, {&a}, now, 50);               /* clamped */
+        CHECK(a.node->getRgbColor(0) == 0 && a.node->getRgbColor(1) == 0xFFFFFF);
+        simSp[4] = 0xFF0000; run(hub, {&a}, now, 50);
+        CHECK(led(0) == 0x00FF00);                                                        /* red is the second byte in GRB */
+        if (sc == "rgb") {
+            simSafe = true; run(hub, {&a}, now, 50);                                      /* LinuxCNC gone */
+            CHECK(led(0) == 0 && led(1) == 0 && led(2) == 0);
+            simSafe = false; run(hub, {&a}, now, 50);
+            CHECK(led(0) == 0x00FF00 && led(1) == 0xFFFFFF);
+        } else {
+            hubRuns = false; run(hub, {&a}, now, 150);                                    /* hub gone */
+            CHECK(a.node->getState() == NODE_STATE_SAFE && led(0) == 0 && led(2) == 0);
+            hubRuns = true; run(hub, {&a}, now, 150);
+            CHECK(a.node->getState() == NODE_STATE_RUNNING && led(0) == 0x00FF00);
+        }
+        simSafe = true;
+        simSp[4] = simSp[5] = 0.0f;
+    }
+    else if (sc == "rgb-config") {
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode("0e0d81e4210c", 1, "");
+        hub.reserveSetPoints(1u << 0);                                                    /* the hub's own module */
+        CHECK(!hub.addRgb(1, "PD_3", 0, 1, 1, 3, "GRB"));                                 /* SP taken */
+        CHECK(!hub.addRgb(1, "PD_3", 6, 1, 1, 3, "GRB"));                                 /* SP out of range */
+        CHECK(!hub.addRgb(1, "PD_3", 1, 1, 1, 3, "XYZ"));                                 /* colour order */
+        CHECK(!hub.addRgb(1, "PD_3", 1, 0, 1, 3, "GRB"));                                 /* LEDs from 1 */
+        CHECK(!hub.addRgb(1, "PD_3", 1, 1, 0, 3, "GRB"));
+        CHECK(!hub.addRgb(1, "PD_3", 1, 3, 2, 3, "GRB"));                                 /* past the chain */
+        CHECK(!hub.addRgb(1, "PD_3", 1, 1, 1, 65, "GRB"));                                /* 64 LEDs max */
+        CHECK(!hub.addRgb(1, "XD_3", 1, 1, 1, 3, "GRB"));
+        CHECK(hub.addRgb(1, "PD_3", 1, 1, 1, 3, "GRB"));
+        CHECK(!hub.addRgb(1, "PD_3", 1, 2, 1, 3, "GRB"));                                 /* SP used twice */
+        CHECK(!hub.addRgb(1, "PD_3", 2, 2, 1, 3, "RGB"));                                 /* two orders on one chain */
+        CHECK(!hub.addPwm(1, "PD_3", 2, 255, 10000, 0));                                  /* pin of the chain */
+        CHECK(hub.addRgb(1, "PD_3", 2, 2, 2, 3, ""));                                     /* default GRB */
+        CHECK(hub.addRgb(1, "PA_9", 3, 1, 10, 10, "RGB"));                                /* a second chain */
+        CHECK(!hub.addRgb(1, "PC_6", 4, 1, 1, 1, "GRB"));                                 /* 2 chains per node */
+        CHECK(hub.addRgb(1, "PA_9", 4, 1, 1, 10, "RGB"));
+        CHECK(!hub.addRgb(1, "PA_9", 5, 2, 1, 10, "RGB"));                                /* 4 segments per node */
+        /* the node rejects a pin that is no timer channel */
+        Node a(1, 2, 3);
+        RemoraCAN hc2; CanHub hub2(&hc2);
+        hub2.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub2.addRgb(1, "PB_13", 2, 1, 3, 3, "GRB"));
+        run(hub2, {&a}, now, 3000);
+        CHECK(a.node->getState() == NODE_STATE_PREOP && hub2.runningMask() == 0 && a.node->getRgbCount() == 0);
     }
     else if (sc == "tmc-config") {
         RemoraCAN hc; CanHub hub(&hc);

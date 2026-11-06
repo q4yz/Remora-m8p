@@ -31,10 +31,16 @@ CanNode::CanNode(RemoraCAN* can, uint32_t baseFreq) :
     lastAnalogSample(0),
     lastAnalog(0),
     pwmCount(0),
-    pwmFrames(0)
+    pwmFrames(0),
+    rgbChainCount(0),
+    rgbCount(0),
+    rgbSafe(true),
+    rgbFrames(0)
 {
     memset(this->joints, 0, sizeof(this->joints));
     memset(this->pwm, 0, sizeof(this->pwm));
+    memset(this->rgbChain, 0, sizeof(this->rgbChain));
+    memset(this->rgbSeg, 0, sizeof(this->rgbSeg));
     // as the Remora stepgen: no floating point in the interrupt (the Cortex-M0+ has no FPU)
     this->frequencyScale = ((int64_t)1 << (NODE_STEPBIT + 32)) / baseFreq;
 
@@ -197,6 +203,35 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
         uint16_t period = (uint16_t)(m.dirPin | (m.enablePin << 8));
         if (m.bit >= CAN_NODE_PWM || m.flags > 100 || period < CAN_PWM_MIN_PERIOD) return CFG_ERR_VALUE;
     }
+    else if (m.type == MODULE_RGB)
+    {
+        // pin, colour order, local segment, first LED, LEDs
+        if (m.bit >= CAN_NODE_RGB || m.flags >= RGB_ORDERS || m.enablePin == 0 ||
+            m.dirPin + m.enablePin > RGB_MAX_LEDS) return CFG_ERR_VALUE;
+        if (canIoPinExists(m.pin) && !canIoPinReserved(m.pin) && !canIoRgbCapable(m.pin)) return CFG_ERR_NOT_RGB;
+
+        // the segments on one pin are one chain with one colour order, CAN_NODE_RGB_CHAINS pins
+        int chains = 0;
+        bool known = false;
+        for (int i = 0; i < this->pendingCount; i++)
+        {
+            const canNodeModule_t& p = this->pending[i];
+            if (p.type != MODULE_RGB) continue;
+            if (p.pin == m.pin)
+            {
+                if (p.flags != m.flags) return CFG_ERR_VALUE;
+                known = true;
+                continue;
+            }
+            bool firstOfPin = true;
+            for (int k = 0; k < i; k++)
+            {
+                if (this->pending[k].type == MODULE_RGB && this->pending[k].pin == p.pin) firstOfPin = false;
+            }
+            if (firstOfPin) chains++;
+        }
+        if (!known && chains >= CAN_NODE_RGB_CHAINS) return CFG_ERR_FULL;
+    }
     else return CFG_ERR_TYPE;
 
     uint8_t pins[3], used[3];
@@ -213,13 +248,14 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
     {
         const canNodeModule_t& p = this->pending[i];
         int n = modulePins(p, used);
-        for (int k = 0; k < count; k++)
+        bool sameChain = p.type == MODULE_RGB && m.type == MODULE_RGB && p.pin == m.pin;   // checked above
+        for (int k = 0; k < count && !sameChain; k++)
         {
             for (int l = 0; l < n; l++) if (used[l] == pins[k]) { m.pin = pins[k]; return CFG_ERR_PIN_USED; }
         }
         if (p.type != m.type || p.bit != m.bit || m.type == MODULE_TMC2209) continue;
         if (m.type == MODULE_STEPGEN) return CFG_ERR_JOINT;
-        if (m.type == MODULE_ANALOG_IN || m.type == MODULE_PWM) return CFG_ERR_VALUE;
+        if (m.type == MODULE_ANALOG_IN || m.type == MODULE_PWM || m.type == MODULE_RGB) return CFG_ERR_VALUE;
         if ((p.flags & DPIN_OUTPUT) == (m.flags & DPIN_OUTPUT)) return CFG_ERR_BIT;
     }
     return CFG_OK;
@@ -300,6 +336,12 @@ void CanNode::handleConfig(const canFrame_t& frame)
                 printf("CONFIG: module %d: PWM %d, %s, period %d ticks, safe duty %d %%\n", c.index + 1, m.bit,
                        canPinName(m.pin, name), m.dirPin | (m.enablePin << 8), m.flags);
             }
+            else if (m.type == MODULE_RGB)
+            {
+                printf("CONFIG: module %d: RGB segment %d, %s, LEDs %d ... %d, %s\n", c.index + 1, m.bit,
+                       canPinName(m.pin, name), m.dirPin + 1, m.dirPin + m.enablePin,
+                       rgbOrderNames[m.flags < RGB_ORDERS ? m.flags : RGB_ORDER_GRB]);
+            }
             else if (m.type == MODULE_TMC2209)
             {
                 printf("CONFIG: module %d: TMC2209 UART %s, address %d, %d mA, %d microsteps, %s, stall %d\n",
@@ -356,9 +398,34 @@ void CanNode::applyConfig()
     this->jointCount = 0;
     this->analogCount = 0;
     this->pwmCount = 0;
+    this->rgbChainCount = 0;
+    this->rgbCount = 0;
     for (int i = 0; i < this->moduleCount; i++)
     {
         const canNodeModule_t& m = this->modules[i];
+        if (m.type == MODULE_RGB)
+        {
+            int c = 0;
+            while (c < this->rgbChainCount && this->rgbChain[c].pin != m.pin) c++;
+            canNodeRgbChain_t& chain = this->rgbChain[c];
+            if (c == this->rgbChainCount)
+            {
+                chain.pin = m.pin;
+                chain.order = m.flags;
+                chain.leds = 0;
+                chain.dirty = true;
+                chain.lastSend = this->now;
+                this->rgbChainCount++;
+            }
+            if (m.dirPin + m.enablePin > chain.leds) chain.leds = (uint8_t)(m.dirPin + m.enablePin);
+            canNodeRgbSegment_t& s = this->rgbSeg[m.bit];
+            s.chain = (uint8_t)c;
+            s.first = m.dirPin;
+            s.count = m.enablePin;
+            s.color = 0;
+            if (m.bit + 1 > this->rgbCount) this->rgbCount = (uint8_t)(m.bit + 1);
+            continue;
+        }
         if (m.type == MODULE_PWM)
         {
             canNodePwm_t& p = this->pwm[m.bit];
@@ -419,6 +486,20 @@ void CanNode::applyConfig()
         canIoConfigure(m.pin, output, (m.flags & DPIN_MOD_MASK) >> DPIN_MOD_SHIFT, (m.flags & DPIN_SAFE_HIGH) != 0);
     }
 
+    // the LED chains, once all their segments are known (the length); off until LinuxCNC is there
+    for (int c = 0; c < this->rgbChainCount; c++)
+    {
+        canNodeRgbChain_t& chain = this->rgbChain[c];
+        if (!canIoRgbConfigure(chain.pin, chain.leds))
+        {
+            char name[6];
+            printf("RGB: no timer / DMA for the chain on %s\n", canPinName(chain.pin, name));
+            chain.leds = 0;                     // never sent
+        }
+    }
+    this->rgbSafe = true;
+    this->rgbFrames = 0;
+
     this->state = NODE_STATE_RUNNING;
     this->lastCommand = this->now;
     this->lastJoint = this->now;
@@ -453,6 +534,9 @@ void CanNode::releaseModules()
         if (was) canIoWrite(this->pwm[i].pin, false);
     }
     this->pwmCount = 0;
+    for (int c = 0; c < this->rgbChainCount; c++) canIoRgbRelease(this->rgbChain[c].pin);
+    this->rgbChainCount = 0;
+    this->rgbCount = 0;
 
     uint8_t pins[3];
     for (int i = 0; i < this->moduleCount; i++)
@@ -493,6 +577,63 @@ void CanNode::handlePwm(const canFrame_t& frame)
     }
     this->pwmFrames++;
     this->writePwm();
+}
+
+
+void CanNode::handleRgb(const canFrame_t& frame)
+{
+    if (!this->rgbCount || frame.len < 4) return;
+    if (this->state != NODE_STATE_RUNNING && this->state != NODE_STATE_SAFE) return;
+
+    int k = frame.data[0];
+    for (int i = 0; i < (frame.len - 1) / 3 && k + i < this->rgbCount; i++)
+    {
+        canNodeRgbSegment_t& s = this->rgbSeg[k + i];
+        uint32_t color = ((uint32_t)frame.data[1 + 3 * i] << 16) | ((uint32_t)frame.data[2 + 3 * i] << 8) |
+                         frame.data[3 + 3 * i];
+        if (color != s.color)
+        {
+            s.color = color;
+            this->rgbChain[s.chain].dirty = true;
+        }
+    }
+    this->rgbFrames++;
+}
+
+
+// the chains that changed (colour, safe state) and once per CAN_RGB_REFRESH_MS, main loop
+void CanNode::serviceRgb()
+{
+    if (this->safe != this->rgbSafe)
+    {
+        this->rgbSafe = this->safe;
+        for (int c = 0; c < this->rgbChainCount; c++) this->rgbChain[c].dirty = true;
+    }
+
+    for (int c = 0; c < this->rgbChainCount; c++)
+    {
+        canNodeRgbChain_t& chain = this->rgbChain[c];
+        if (!chain.leds) continue;
+        if (!chain.dirty && (this->now - chain.lastSend) < CAN_RGB_REFRESH_MS) continue;
+
+        memset(chain.bytes, 0, chain.leds * 3);
+        if (!this->safe)
+        {
+            for (int i = 0; i < this->rgbCount; i++)
+            {
+                const canNodeRgbSegment_t& s = this->rgbSeg[i];
+                if (s.chain != c) continue;
+                uint8_t b[3];
+                rgbBytes(s.color, chain.order, b);
+                for (int l = s.first; l < s.first + s.count; l++) memcpy(&chain.bytes[3 * l], b, 3);
+            }
+        }
+        if (canIoRgbSend(chain.pin, chain.bytes))
+        {
+            chain.dirty = false;
+            chain.lastSend = this->now;
+        }
+    }
 }
 
 
@@ -786,6 +927,7 @@ void CanNode::service(uint32_t now)
         else if (this->node && f.id == (uint32_t)(CAN_ID_COMMAND + this->node)) this->handleCommand(f);
         else if (this->node && f.id == (uint32_t)(CAN_ID_JOINT + this->node)) this->handleJoint(f);
         else if (this->node && f.id == (uint32_t)(CAN_ID_PWM + this->node)) this->handlePwm(f);
+        else if (this->node && f.id == (uint32_t)(CAN_ID_RGB + this->node)) this->handleRgb(f);
     }
 
     if (this->state == NODE_STATE_RUNNING || this->state == NODE_STATE_SAFE)
@@ -811,6 +953,7 @@ void CanNode::service(uint32_t now)
 
         this->serviceTmc();
         this->serviceAnalog();
+        this->serviceRgb();
 
         // TX queue full (nobody acknowledges): try again in the next ms, not on every loop pass
         uint16_t in = this->readInputs();

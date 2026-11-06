@@ -14,6 +14,9 @@ struct SimIo
     bool analogOn[96] = {};
     int highTicks[96] = {};       /* base ticks the pin was high, e.g. PWM duty */
     int configures = 0;
+    int rgbLeds[96] = {};         /* LED chain configured on the pin, 0: none */
+    int rgbSends[96] = {};        /* transfers to the chain */
+    uint8_t rgb[96][64 * 3] = {}; /* the bytes of the last transfer */
 };
 
 extern SimIo* simIo;

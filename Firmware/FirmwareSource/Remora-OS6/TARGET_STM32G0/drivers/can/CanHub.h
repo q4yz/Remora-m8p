@@ -111,6 +111,13 @@ typedef struct
     uint16_t pwmDuty[CAN_NODE_PWM];         // in the last PWM frame
     uint32_t lastPwm;           // ms
     bool     pwmSent;           // since the configuration
+
+    // RGB LED segments: node local segment i shows LinuxCNC set point rgbSp[i] (0xRRGGBB)
+    uint8_t  rgbSp[CAN_NODE_RGB];
+    uint8_t  rgbCount;
+    uint32_t rgbColor[CAN_NODE_RGB];        // in the last RGB frames
+    uint32_t lastRgb;           // ms
+    bool     rgbSent;           // since the configuration
 } canNodeEntry_t;
 
 #define CAN_HUB_VARIABLES       6           // LinuxCNC process variables (VARIABLES in configuration.h)
@@ -176,6 +183,7 @@ class CanHub
         void handleEmcy(const canFrame_t& frame);
         void handleAnalog(const canFrame_t& frame);
         void sendPwm(canNodeEntry_t* n, const volatile float* setPoint, uint32_t now);
+        void sendRgb(canNodeEntry_t* n, const volatile float* setPoint, uint32_t now);
         void printTmc(const canNodeEntry_t* n, int module);
         bool sendJoint(canNodeEntry_t* n, const volatile int32_t* freq, uint8_t enable, bool safe);
         void sendConfigStep(canNodeEntry_t* n, uint32_t now);
@@ -238,6 +246,13 @@ class CanHub
 
         // PWM duties to the nodes, main loop: setPoint rxData.setPoint
         void servicePwm(uint32_t now, const volatile float* setPoint);
+
+        // a segment of an "RGB" LED chain on a node: LEDs first ... first + count - 1 (from 1) of the
+        // chain of leds LEDs on pin show set point sp as 0xRRGGBB; order "GRB" ... (rgbColor.h)
+        bool addRgb(int node, const char* pin, int sp, int first, int count, int leds, const char* order);
+
+        // LED colours to the nodes, main loop: setPoint rxData.setPoint
+        void serviceRgb(uint32_t now, const volatile float* setPoint);
 
         // outputs: rxData.outputs; safe: LinuxCNC gone, node outputs to their safe state
         void service(uint32_t now, bool quiet, bool safe = true, uint16_t outputs = 0);

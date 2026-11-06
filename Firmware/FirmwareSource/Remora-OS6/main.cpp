@@ -70,6 +70,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "pwm.h"
 #include "rcservo.h"
 #include "resetPin.h"
+#include "rgb.h"
 #include "stepgen.h"
 
 #if defined(TARGET_MANTA8)
@@ -506,6 +507,12 @@ void configCan()
         if (pv >= 0 && pv < VARIABLES) localVariables |= (uint8_t)(1u << pv);
         int sp = m["SP[i]"] | -1, periodSp = m["Period SP[i]"] | -1;
         if (sp >= 0 && sp < VARIABLES) localSetPoints |= (uint8_t)(1u << sp);
+        JsonArray segments = m["Segments"];         // RGB: a set point per segment
+        for (JsonArray::iterator st = segments.begin(); st != segments.end(); ++st)
+        {
+            int ssp = (*st)["SP[i]"] | -1;
+            if (ssp >= 0 && ssp < VARIABLES) localSetPoints |= (uint8_t)(1u << ssp);
+        }
         if (periodSp >= 0 && periodSp < VARIABLES && !strcmp(m["Variable Freq"] | "", "True"))
         {
             localSetPoints |= (uint8_t)(1u << periodSp);
@@ -581,6 +588,20 @@ void configCan()
                 int pwmMax = m["PWM Max"] | 0;
                 canHub->addPwm(number, m["PWM Pin"] | "", m["SP[i]"] | -1, pwmMax ? pwmMax : 255,
                                m["Period us"] | 10000, (int)(m["Safe Duty"] | 0.0f));
+            }
+            else if (!strcmp(type, "RGB"))
+            {
+                // a set point per segment, the whole chain without "Segments"
+                const char* pin = m["Pin"] | "";
+                int leds = m["Chain Count"] | 1;
+                const char* order = m["Color Order"] | "GRB";
+                JsonArray segments = m["Segments"];
+                if (segments.size() == 0) canHub->addRgb(number, pin, m["SP[i]"] | -1, 1, leds, leds, order);
+                for (JsonArray::iterator st = segments.begin(); st != segments.end(); ++st)
+                {
+                    JsonObject seg = *st;
+                    canHub->addRgb(number, pin, seg["SP[i]"] | -1, seg["First"] | 1, seg["Count"] | 1, leds, order);
+                }
             }
             else if (!strcmp(type, "TMC2209"))
             {
@@ -713,6 +734,10 @@ void loadModules()
             else if (!strcmp(type,"MCU Temperature"))
             {
                 createMcuTemperature();
+            }
+            else if (!strcmp(type,"RGB"))
+            {
+                createRgb();
             }
             else if (!strcmp(type,"Switch"))
             {
@@ -1071,6 +1096,7 @@ int main()
     comms->SPItasks();
 
     reportMcuTemp();
+    rgbService();
 
 #ifdef CAN_HUB
     // remote joints: the new frequency commands go to the nodes right after each WRITE frame
@@ -1087,6 +1113,7 @@ int main()
     {
         canHub->writeVariables(txData.processVariable);
         canHub->servicePwm(HAL_GetTick(), rxData.setPoint);
+        canHub->serviceRgb(HAL_GetTick(), rxData.setPoint);
     }
 #endif
 

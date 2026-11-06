@@ -22,6 +22,7 @@ could disturb the base thread).
 | `0x280 + n` | STATUS (process data) | node → hub | 3/4 |
 | `0x300 + n` | PWM (duties) | hub → node | PWM |
 | `0x380 + n` | ANALOG (ADC readings) | node → hub | temperature |
+| `0x400 + n` | RGB (LED colours) | hub → node | RGB |
 | `0x580 + n` | CONFIG REPLY | node → hub | 2 |
 | `0x600 + n` | CONFIG | hub → node | 2 |
 | `0x700 + n` | HEARTBEAT | node → hub | 1 |
@@ -114,6 +115,9 @@ Module types (pins as `port << 4 | number`, port 0 = A, `0xFF` none):
 - `0x04` analog input, data: ADC pin, 0, node local analog index (0 ... 3).
 - `0x05` PWM output, data: pin, safe duty (%), node local PWM index (0 ... 3),
   period in base ticks (16-bit little endian, 25 µs each, at least 40 = 1 ms).
+- `0x06` RGB LED segment, data: pin, colour order (0 RGB, 1 RBG, 2 GRB, 3 GBR,
+  4 BRG, 5 BGR), node local segment (0 ... 3), first LED (0 ...), LEDs. The
+  segments on one pin are one chain (same colour order), up to 2 chains.
 
 ## Process data (phase 3)
 
@@ -278,6 +282,37 @@ node; up to 4 per node.
 
 A heater on PWM: PID output to the SP, `"Safe Duty": 0`, and a period of
 about 100 ms (`"Period us": 100000`) for the MOSFET.
+
+## RGB LEDs (WS2812 / SK6812)
+
+An `"RGB"` module in a node entry, same keys as the hub's own RGB module
+(`modules/rgb/rgb.h`), e.g. the three LEDs of a Stealthburner on an SB2209:
+
+```json
+{ "Type": "RGB", "Comment": "stealthburner", "Pin": "PD_3", "Chain Count": 3,
+  "Color Order": "GRB",
+  "Segments": [ { "First": 1, "Count": 1, "SP[i]": 4 },
+                { "First": 2, "Count": 2, "SP[i]": 5 } ] }
+```
+
+Without `"Segments"`, `"SP[i]"` colours the whole chain. Each segment shows
+the colour of its LinuxCNC set point as `0xRRGGBB` (`remora.SP.4` =
+`R * 65536 + G * 256 + B`, exact in a float; e.g. `M150 R255 G64 B0` writes
+16728064). `"Color Order"` is the chips' byte order, default GRB (WS2812).
+LED numbers count from 1 like Klipper's `INDEX`, up to 64 LEDs per chain,
+up to 4 segments per node. The SPs must not be used twice (hub or nodes).
+On a node the chain ends with the last segment: LEDs after it are not
+driven, so let the segments cover the whole chain (gaps between them are
+sent off).
+
+- The pin must be a timer channel output (TIM1/3/4/15/16/17, also CHxN, e.g.
+  PD3 = TIM1_CH2N on the EBB42 / SB2209): the node sends the bits with the
+  timer and DMA, no interrupts are held. Otherwise the node rejects the
+  module (`CFG_ERR_NOT_RGB`).
+- RGB `0x400 + n`, hub → node: byte 0 the first local segment k, then R, G,
+  B of segments k and k + 1. On a change at most every 20 ms, and every 1 s.
+- Off after the configuration until LinuxCNC is there, while LinuxCNC is
+  gone (COMMAND safe flag) and in state SAFE.
 
 ## Next phases
 
