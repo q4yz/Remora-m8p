@@ -14,6 +14,7 @@
 #define PRU_READ          	0x72656164  // "read" SPI payload
 #define PRU_WRITE         	0x77726974  // "writ" SPI payload
 #define PRU_ESTOP           0x65737470  // "estp" SPI payload
+#define PRU_OVERTEMP        0x6f746d70  // "otmp" SPI payload: MCU over temperature shutdown, latched until the board resets
 
 #define STEPBIT				22			// bit location in DDS accum
 #define STEP_MASK			(1L<<STEPBIT)

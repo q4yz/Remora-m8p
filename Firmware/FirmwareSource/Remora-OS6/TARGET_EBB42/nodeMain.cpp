@@ -1,5 +1,8 @@
 /***********************************************************************
-    Remora CAN node firmware for the BTT EBB42 V1.1 / V1.2 (STM32G0B1CBT6)
+    Remora CAN node firmware for the BTT EBB42 V1.1 / V1.2 and the BTT EBB
+    SB2209 CAN V1.0 (both STM32G0B1CBT6, 8 MHz crystal, CAN on PB0 / PB1,
+    USB on PA11 / PA12: one firmware, target EBB_SB2209 inherits EBB42 and
+    only changes the board name)
 
     Takes its node number and its modules (digital pins, step generators,
     TMC2209 drivers, thermistors) from the hub and exchanges the process data
@@ -22,6 +25,10 @@
 
 #include "CanNode.h"
 #include "UsbCdc.h"
+
+#ifndef REMORA_NODE_BOARD
+#define REMORA_NODE_BOARD   "BTT EBB42"     // EBB_SB2209 target: "BTT EBB SB2209 CAN"
+#endif
 
 #define NODE_CAN_BITRATE    1000000         // fixed in phase 1, must match "CAN" "Bitrate" on the hub
 #define NODE_STATUS_MS      2000            // debug status line period
@@ -79,7 +86,7 @@ int main()
     for (int i = 0; i < 6; i++) snprintf(&uuid[2 * i], 3, "%02x", node.getUuid()[i]);
     usbCdc.start(uuid);
 
-    printf("\nRemora CAN node, BTT EBB42\n");
+    printf("\nRemora CAN node, %s\n", REMORA_NODE_BOARD);
     printf("UUID %s, SystemCoreClock %lu Hz\n", uuid, (unsigned long)SystemCoreClock);
     can.start();                            // prints the result
     startBaseThread(&node);

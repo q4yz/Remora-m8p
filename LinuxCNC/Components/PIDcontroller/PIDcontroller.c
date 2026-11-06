@@ -216,11 +216,20 @@ static void compute(void *arg, long period)
     }
     pid->inAuto = newAuto;
 
-    if(pid->inAuto)
+    if(pid->inAuto && !(*(pid->setpoint) > 0))
+    {
+        // no target (0, negative or NaN): off, whatever SPmin says - a clamped set point
+        // above 0 would keep heating with nothing set. Restart from 0 when a target comes.
+        pid->outputSum = 0;
+        pid->lastInput = *(pid->input);
+        *(pid->error) = 0;
+        *(pid->output) = 0;
+    }
+    else if(pid->inAuto)
     {
         /*Compute all the working error variables*/
         setpoint = *(pid->setpoint);
-        
+
         if(setpoint > maxSetpoint) setpoint = maxSetpoint;
         else if(setpoint < minSetpoint) setpoint = minSetpoint;
 

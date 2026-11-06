@@ -36,15 +36,28 @@ RemoraComms::RemoraComms(volatile rxData_t* ptrRxData, volatile txData_t* ptrTxD
     this->initialised = false;
     this->dbgFrames = this->dbgReads = this->dbgWrites = this->dbgRejects = this->dbgTimeouts = 0;
     this->dbgLastBad = 0;
+    this->dbgTorn = 0;
+    this->dbgRearms = 0;
+    this->lastEdgeTick = 0;
+    this->rearmed = true;
+    this->qHead = this->qTail = 0;
+    this->dbgLost = 0;
+    this->dbgLate = 0;
+    this->restarting = false;
+    this->tornCnt = 0;
 
     if (this->spiType != SPI2 || this->interruptPin != PB_12)
     {
         printf("Error - STM32G0 Remora comms only supports SPI2 with NSS on PB_12\n");
     }
 
-    // Cortex-M0+ has 4 priority levels, keep the NSS edge below the base thread
+    // Cortex-M0+ has 4 priority levels (us ticker 0, base thread 1, servo 2, comms 3). The NSS edge
+    // goes to 0: below the threads the servo thread (ADC reads, all its modules) held it back by
+    // more than the gap to the next frame, and the base thread could preempt it in the middle of
+    // frameRearm() - with the SPI in reset when the next frame started (0xffffffff, shifted replies).
+    // The handler is a few us: a 64 byte copy and the re-arm, the base thread jitters by that much.
     slaveSelect.rise(callback(this, &RemoraComms::NSSinterrupt));
-    HAL_NVIC_SetPriority(EXTI4_15_IRQn, 3, 0);
+    HAL_NVIC_SetPriority(EXTI4_15_IRQn, 0, 0);
 }
 
 
@@ -158,55 +171,134 @@ void RemoraComms::start()
 }
 
 
+// Start the SPI and both DMA channels over at byte 0, register level (a few us). Run at every frame
+// end while the bus is idle: whatever state the reply side was left in (a byte in the TX FIFO too
+// many or too few, a stray clock edge in the bit counter) is gone before the next frame, in both
+// directions. The DMA channels keep their HAL set up (addresses, circular, DMAMUX request).
+void RemoraComms::frameRearm()
+{
+    DMA1_Channel2->CCR &= ~DMA_CCR_EN;
+    DMA1_Channel3->CCR &= ~DMA_CCR_EN;
+
+    // the only way to empty the TX FIFO: reset the peripheral
+    __HAL_RCC_SPI2_FORCE_RESET();
+    __HAL_RCC_SPI2_RELEASE_RESET();
+
+    // as HAL_SPI_Init left it: CR1 0 = slave, mode 0, MSB first, hardware NSS input
+    SPI2->CR1 = 0;
+    SPI2->CR2 = SPI_DATASIZE_8BIT | SPI_CR2_FRXTH | SPI_CR2_RXDMAEN;
+
+    DMA1->IFCR = DMA_IFCR_CGIF2 | DMA_IFCR_CGIF3;
+    DMA1_Channel2->CNDTR = SPI_BUFF_SIZE;
+    DMA1_Channel3->CNDTR = SPI_BUFF_SIZE;
+    DMA1_Channel2->CCR |= DMA_CCR_EN;
+    DMA1_Channel3->CCR |= DMA_CCR_EN;
+
+    // TX DMA before SPE (RM0444 SPI DMA sequence): the FIFO holds the first reply bytes before
+    // the master's next clock edge
+    SPI2->CR2 |= SPI_CR2_TXDMAEN;
+    SPI2->CR1 |= SPI_CR1_SPE;
+}
+
+
 void RemoraComms::NSSinterrupt()
 {
-    // NSS / CS has gone high, packet received
-    this->NSS = true;
+    // NSS / CS has gone high, a frame is complete. The frame is copied here, not in the main loop:
+    // the host may start the next frame right away (two frames per servo period, at a low SPI clock
+    // there is hardly a gap between them) and the circular DMA then overwrites the buffer while the
+    // main loop is still reading it - the torn READ / WRITE headers.
+
+    // the last byte may still be on its way from the SPI FIFO to memory, give the DMA a moment
+    uint32_t remaining = __HAL_DMA_GET_COUNTER(&this->hdma_spi_rx);
+    for (int i = 0; i < 64 && remaining != SPI_BUFF_SIZE; i++)
+    {
+        remaining = __HAL_DMA_GET_COUNTER(&this->hdma_spi_rx);
+    }
+
+    this->lastEdgeTick = HAL_GetTick();
+    this->rearmed = false;
+
+    uint8_t slot = this->qHead;
+    uint8_t next = (uint8_t)((slot + 1) % FRAME_QUEUE);
+    if (next == this->qTail)
+    {
+        // the main loop is far behind: drop this frame, the ones queued stay intact
+        this->dbgLost++;
+        if (!this->restarting && (GPIOB->IDR & GPIO_PIN_12)) this->frameRearm();
+        return;
+    }
+
+    bool torn = (remaining != SPI_BUFF_SIZE);
+
+    if (!torn)
+    {
+        const volatile uint32_t* src = (const volatile uint32_t*)this->spiRxBuffer.rxBuffer;
+        uint32_t* dst = (uint32_t*)this->frameQueue[slot].rxBuffer;
+        for (int i = 0; i < SPI_BUFF_SIZE / 4; i++)
+        {
+            dst[i] = src[i];
+        }
+        // the next frame started during the copy: the copy may hold bytes of both frames
+        torn = (__HAL_DMA_GET_COUNTER(&this->hdma_spi_rx) != SPI_BUFF_SIZE);
+    }
+
+    this->frameTorn[slot] = torn;
+    this->qHead = next;                     // publish the slot after it is complete
+
+    // re-arm for the next frame, unless it has already started (NSS low again): then the circular
+    // DMA simply carries on, as without the re-arm
+    if (!this->restarting)
+    {
+        if (GPIOB->IDR & GPIO_PIN_12) this->frameRearm();
+        else this->dbgLate++;
+    }
 }
 
 
 void RemoraComms::SPItasks()
 {
-    if (this->NSS)
+    // The reply (TX) side can lose its byte alignment without the receive side noticing: the
+    // host then reads a header shifted by a byte or a few bits (00646174, bcbcbcbc, ...), drops
+    // SPI-status and stops clocking, and every E-stop reset would meet the same shifted reply.
+    // Whenever the bus has been quiet for IDLE_REARM_MS the SPI (bit counter, FIFOs) and both
+    // DMA channels start over from byte 0, so the next frame is aligned in both directions.
+    // LinuxCNC clocks every servo period (1 ms), this never runs while the link is up.
+    if (this->qTail == this->qHead && !this->rearmed && (HAL_GetTick() - this->lastEdgeTick) > IDLE_REARM_MS)
     {
-        this->NSS = false;
+        this->rearmed = true;
+        this->dbgRearms++;
+        this->restartDMA();
+    }
+
+    while (this->qTail != this->qHead)
+    {
+        // the interrupt never writes a queued slot, it drops a frame when the queue is full
+        uint8_t slot = this->qTail;
+        bool torn = this->frameTorn[slot];
+        rxData_t frame = this->frameQueue[slot];
+        this->qTail = (uint8_t)((slot + 1) % FRAME_QUEUE);
+
         this->dbgFrames++;
 
-        this->DMArxCnt = 0;
-        this->ticksStart = HAL_GetTick();
-
-        // wait for DMA to complete and break if DMA is not complete in time
-        while (this->DMArxCnt != SPI_BUFF_SIZE)
+        if (torn)
         {
-            this->DMArxCnt = __HAL_DMA_GET_COUNTER(&this->hdma_spi_rx);
-            this->ticks = HAL_GetTick() - this->ticksStart;
-
-            if (this->ticks > 2)
-            {
-                this->resetSPI = true;
-                this->dbgTimeouts++;
-                break;
-            }
-        }
-
-        if (this->resetSPI)
-        {
-            // the frame boundary is lost: the DMA was started in the middle of a frame (the host
-            // was already clocking when the board booted) or a byte went missing. The DMA is
-            // circular, every following frame would be shifted, so drop this one and re-align on
-            // the next NSS edge, in normal operation as in upload mode. Counted in dbgTimeouts,
+            // the NSS edge came in the middle of a DMA frame: once in a while the main loop or a
+            // higher priority interrupt was late, the frame is dropped. Edge after edge means the
+            // DMA lost the frame boundary (started mid frame at boot, a byte missing), every
+            // following frame would be shifted: re-align. Counted in dbgTorn / dbgTimeouts,
             // no printf (it blocks the main loop and costs more frames)
-            // While LinuxCNC is running (CommsStatus) a restart would send it a bad payload and E-stop
-            // the machine, there a shifted DMA shows up as bad headers and is handled below
-            this->resetSPI = false;
-            if (this->uploadMode || !this->CommsStatus)
+            this->dbgTorn++;
+            if (++this->tornCnt >= EDGE_REALIGN)
             {
+                this->tornCnt = 0;
+                this->dbgTimeouts++;
                 this->restartDMA();
             }
-            return;
+            continue;
         }
+        this->tornCnt = 0;
 
-        switch (this->spiRxBuffer.header)
+        switch (frame.header)
         {
             case PRU_READ:
                 this->dbgReads++;
@@ -226,7 +318,7 @@ void RemoraComms::SPItasks()
 
                 for (int i = 0; i < SPI_BUFF_SIZE; i++)
                 {
-                    this->ptrRxData->rxBuffer[i] = this->spiRxBuffer.rxBuffer[i];
+                    this->ptrRxData->rxBuffer[i] = frame.rxBuffer[i];
                 }
 
                 __enable_irq();
@@ -237,7 +329,7 @@ void RemoraComms::SPItasks()
                 // copy the frame now, before the next transfer overwrites the DMA buffer
                 for (int i = 0; i < SPI_BUFF_SIZE; i++)
                 {
-                    this->uploadRxBuffer.rxBuffer[i] = this->spiRxBuffer.rxBuffer[i];
+                    this->uploadRxBuffer.rxBuffer[i] = frame.rxBuffer[i];
                 }
                 this->uploadFrame = true;
                 break;
@@ -245,7 +337,7 @@ void RemoraComms::SPItasks()
             default:
                 this->rejectCnt++;
                 this->dbgRejects++;
-                this->dbgLastBad = this->spiRxBuffer.header;
+                this->dbgLastBad = frame.header;
                 if (this->rejectCnt > 5)
                 {
                     this->SPIdataError = true;
@@ -304,11 +396,14 @@ void RemoraComms::setUploadMode(bool mode)
 void RemoraComms::stopDMA()
 {
     // the SD card has its own SPI bus here, pausing just keeps the frames in step with the main loop
+    // restartDMA() resumes; until then the NSS interrupt must not re-arm the SPI
+    this->restarting = true;
     HAL_SPI_DMAStop(&this->spiHandle);
 }
 
 void RemoraComms::restartDMA()
 {
+    this->restarting = true;
     HAL_SPI_DMAStop(&this->spiHandle);
 
     // wait for the master to finish any transfer in progress so the next frame starts on a boundary
@@ -321,7 +416,9 @@ void RemoraComms::restartDMA()
 
     // re-initialise the SPI and DMA handles without resetting the TX buffer header like start() does
     this->init();
-    this->NSS = false;
+    this->qTail = this->qHead;              // frames queued before the re-align are stale
+    this->rearmed = true;
     HAL_SPI_TransmitReceive_DMA(&this->spiHandle, (uint8_t *)this->ptrTxData->txBuffer, (uint8_t *)this->spiRxBuffer.rxBuffer, SPI_BUFF_SIZE);
     HAL_NVIC_DisableIRQ(DMA1_Channel2_3_IRQn);
+    this->restarting = false;
 }

@@ -2,6 +2,8 @@
 
 Expansion board for the Manta M8P hub, see
 `FirmwareSource/Remora-OS6/TARGET_STM32G0/drivers/can/CAN_PROTOCOL.md`.
+The BTT EBB SB2209 CAN runs the same firmware, its pins:
+`../BTT_EBB_SB2209/README.md`.
 
 **State: phase 2 + joints + TMC2209 + temperature + PWM.** The node joins
 the bus, gets its node number and its modules from the hub. Supported on the

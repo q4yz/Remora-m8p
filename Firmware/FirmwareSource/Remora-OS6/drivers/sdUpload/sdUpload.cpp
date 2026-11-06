@@ -7,6 +7,10 @@
 #define UPLOAD_TMP_PATH     "/fs/upload.tmp"
 
 
+MBED_WEAK void sdBusAcquire(void) {}
+MBED_WEAK void sdBusRelease(void) {}
+
+
 SDUpload::SDUpload(RemoraComms* comms, FATFileSystem* fileSystem, BlockDevice* blockDevice, volatile txData_t* ptrTxData, void (*onStart)(void)) :
     comms(comms),
     fileSystem(fileSystem),
@@ -32,9 +36,10 @@ SDUpload::SDUpload(RemoraComms* comms, FATFileSystem* fileSystem, BlockDevice* b
 }
 
 
-void SDUpload::setConfigInfo(bool found, bool error, uint32_t size, uint32_t crc)
+void SDUpload::setConfigInfo(bool found, bool error, bool sdError, uint32_t size, uint32_t crc)
 {
-    this->configFlags = (found ? UPLOAD_INFO_CONFIG : 0) | (error ? UPLOAD_INFO_ERROR : 0);
+    this->configFlags = (found ? UPLOAD_INFO_CONFIG : 0) | (error ? UPLOAD_INFO_ERROR : 0) |
+                        (sdError ? UPLOAD_INFO_NO_SD : 0);
     this->configSize = size;
     this->configCrc = crc;
 }
@@ -266,6 +271,7 @@ uint8_t SDUpload::writeToCard(bool finish)
     this->comms->stopDMA();
     watchdog.kick();
 
+    sdBusAcquire();
     if (this->fileSystem->mount(this->blockDevice))
     {
         error = UPLOAD_ERR_MOUNT;
@@ -299,6 +305,7 @@ uint8_t SDUpload::writeToCard(bool finish)
 
         this->fileSystem->unmount();
     }
+    sdBusRelease();
 
     this->comms->restartDMA();
     return error;

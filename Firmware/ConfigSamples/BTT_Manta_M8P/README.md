@@ -91,6 +91,38 @@ Use software PWM (`"Hardware PWM": "False"`) for heaters and fans. The pin
 tables of this target only list hardware PWM for the pins of the 64-pin
 package, port E pins are not among them.
 
+## MCU over temperature shutdown
+
+Always on, no configuration needed. The firmware reads the STM32's internal
+temperature sensor 10 times a second. When the die reaches **90 degC** (the
+STM32G0B1xxT6 is rated for a junction temperature of 105 degC) for 0.3 s, or the
+sensor gives no plausible reading for 2 s, the board shuts down until it is
+reset or power cycled:
+
+- every output goes to its safe state, as when LinuxCNC is gone: heaters and
+  fans to their `Safe Duty`, digital outputs to their `Safe State`, the CAN
+  nodes as well; the step generators stop and disable their drivers;
+- every SPI reply carries the `otmp` header: remora-spi drops `SPI-status`
+  (LinuxCNC goes to E-stop), sets `remora.PRU-overtemp` and logs
+  `MCU OVER TEMPERATURE`. An older remora-spi sees a bad payload and goes to
+  E-stop as well;
+- the console prints `MCU SHUTDOWN: MCU at ... degC` (a warning at 80 degC).
+
+To see the temperature in LinuxCNC, add the optional report module with a free
+process variable; it arrives as `remora.PV.5` here. After a shutdown it shows
+the value of the last frame and refreshes with every E-stop reset attempt:
+
+```
+{ "Type": "MCU Temperature", "Thread": "Servo", "Comment": "MCU", "PV[i]": 5 }
+```
+
+That is the place for a lower limit of your own in HAL (e.g. `wcomp` into the
+E-stop chain), as a second line in front of the fixed 90 degC.
+
+A hot MCU is a symptom, not normal operation: the STM32 itself dissipates far
+too little to reach this by itself. Look for a pin with external voltage on it,
+a shorted output or a hot neighbour (stepper drivers without heat sinks).
+
 ## Performance
 
 The Cortex-M0+ has no FPU and runs at 64 MHz, about a third of the

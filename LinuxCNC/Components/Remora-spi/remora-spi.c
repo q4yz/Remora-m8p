@@ -74,6 +74,11 @@ typedef struct {
 	hal_bit_t		*PRUreset;
 	bool			SPIresetOld;
 	hal_bit_t		*SPIstatus;
+	hal_bit_t		*PRUovertemp;		// the board shut down on MCU over temperature (latched until it sends data again)
+	hal_u32_t		*badHeader;			// header of the last rejected reply from the board
+	hal_u32_t		*badCount;			// rejected replies since LinuxCNC started
+	hal_u32_t		*xferErrors;		// transfers the host SPI driver could not complete (timeout, ioctl error)
+	hal_u32_t		*badRunMax;			// longest run of consecutive bad replies since LinuxCNC started
 	hal_bit_t 		*stepperEnable[JOINTS];
 	int				pos_mode[JOINTS];
 	hal_float_t 	*pos_cmd[JOINTS];			// pin: position command (position units)
@@ -156,6 +161,7 @@ static const char 	*prefix = PREFIX;
 static bool			bcm;					// use BCM2835 driver
 static bool			rp1;					// use RP1 driver
 static bool			gspi;					// use the generic Linux spidev driver
+static int			gspi_registers;			// generic driver: frames on the Allwinner SPI registers (GSPI_REGISTERS_*)
 
 static int 			num_chan = 0;			// number of step generators configured
 static long 		old_dtns;				// update_freq function period in nsec - (THIS IS RUNNING IN THE PI)
@@ -192,7 +198,7 @@ RTAPI_MP_INT(SPI_freq, "SPI frequency");
 
 // for the generic Linux driver (boards other than the Raspberry Pi, e.g. BigTreeTech CB1)
 char *spi_backend = "auto";
-RTAPI_MP_STRING(spi_backend, "SPI driver: auto (Raspberry Pi drivers on a Pi, spidev otherwise) or spidev");
+RTAPI_MP_STRING(spi_backend, "SPI driver: auto (Raspberry Pi drivers on a Pi, SPI registers on Allwinner, spidev otherwise), sunxi (Allwinner SPI registers or fail) or spidev");
 
 char *spi_dev = "";
 RTAPI_MP_STRING(spi_dev, "spidev device for the generic driver, default: first /dev/spidevB.C found");
@@ -209,6 +215,13 @@ RTAPI_MP_STRING(spi_cs_pin, "chip select GPIO for the generic driver when the SP
 char *spi_cs_chip = GSPI_DEFAULT_GPIOCHIP;
 RTAPI_MP_STRING(spi_cs_chip, "gpiochip of spi_cs_pin for the generic driver");
 
+// One SPI frame per servo period instead of a READ and a WRITE about 0.1 ms apart. A slow board
+// (STM32G0 under base thread load) handles the frame end in an interrupt that can be later than
+// that gap: the second frame then lands on an SPI/DMA that is not re-armed yet and the replies
+// come back shifted or as zeros. Costs one servo period of command latency.
+int single_frame = 1;
+RTAPI_MP_INT(single_frame, "1 (default): one WRITE frame per servo period, its reply is the feedback; 0: separate READ and WRITE frames");
+
 static int reset_gpio_pin = 25;				// RPI GPIO pin number used to force watchdog reset of the PRU 
 
 
@@ -224,7 +237,34 @@ static int rt_rp1lib_init(void);
 static void update_freq(void *arg, long period);
 static void spi_write();
 static void spi_read();
-static void spi_transfer();
+static int spi_transfer();
+
+// consecutive failed host transfers tolerated before the link counts as lost: a single one is a
+// late or preempted thread on the host, not the board (the board drops the partial frame)
+#define XFER_FAIL_MAX	3
+static int xfer_fail_run = 0;
+
+// consecutive replies with an unknown header tolerated while the link is up (the board's own
+// E-stop and over temperature headers act at once). The board keeps receiving the commands
+// while only its reply is broken (M8P: rejected=0 while the host sees zeros / 0xffffffff for a
+// few frames), so during such a run the feedback is dead-reckoned from the commanded step
+// rate instead of being frozen. Module parameter bad_reply_max, default 10 (10 ms at 1 kHz).
+int bad_reply_max = 10;
+RTAPI_MP_INT(bad_reply_max, "consecutive bad replies tolerated before SPI-status drops (default 10, min 1)");
+static int bad_reply_run = 0;
+
+// while a reply is unusable: advance the position feedback by what the board was told to step
+static void dead_reckon(void)
+{
+	int i;
+	for (i = 0; i < JOINTS; i++)
+	{
+		{ double d = data->freq[i] * dt; count[i] += (int32_t)(d >= 0 ? d + 0.5 : d - 0.5); }
+		old_count[i] = count[i];
+		*(data->count[i]) = count[i];
+		*(data->pos_fb[i]) = (float)(count[i]) / data->pos_scale[i];
+	}
+}
 static CONTROL parse_ctrl_type(const char *ctrl);
 
 /***********************************************************************
@@ -268,7 +308,7 @@ int rtapi_app_main(void)
 	// check to see if the PRU base frequency has been set at the command line
 	if (PRU_base_freq != -1)
 	{
-		if ((PRU_base_freq < 40000) || (PRU_base_freq > 240000))
+		if ((PRU_base_freq < 10000) || (PRU_base_freq > 240000))	// STM32G0 boards run 20 kHz with 5 stepgens
 		{
 			rtapi_print_msg(RTAPI_MSG_ERR, "ERROR: PRU base frequency incorrect\n");
 			return -1;
@@ -322,6 +362,32 @@ int rtapi_app_main(void)
 	retval = hal_pin_bit_newf(HAL_OUT, &(data->SPIstatus),
 			comp_id, "%s.SPI-status", prefix);
 	if (retval != 0) goto error;
+
+	retval = hal_pin_bit_newf(HAL_OUT, &(data->PRUovertemp),
+			comp_id, "%s.PRU-overtemp", prefix);
+	if (retval != 0) goto error;
+	*(data->PRUovertemp) = 0;
+
+	// the last rejected reply, readable with halcmd whatever the rtapi logging does
+	retval = hal_pin_u32_newf(HAL_OUT, &(data->badHeader),
+			comp_id, "%s.SPI-bad-header", prefix);
+	if (retval != 0) goto error;
+	*(data->badHeader) = 0;
+
+	retval = hal_pin_u32_newf(HAL_OUT, &(data->badCount),
+			comp_id, "%s.SPI-bad-count", prefix);
+	if (retval != 0) goto error;
+	*(data->badCount) = 0;
+
+	retval = hal_pin_u32_newf(HAL_OUT, &(data->xferErrors),
+			comp_id, "%s.SPI-transfer-errors", prefix);
+	if (retval != 0) goto error;
+	*(data->xferErrors) = 0;
+
+	retval = hal_pin_u32_newf(HAL_OUT, &(data->badRunMax),
+			comp_id, "%s.SPI-bad-run-max", prefix);
+	if (retval != 0) goto error;
+	*(data->badRunMax) = 0;
 
 	if (bcm == true)
 	{
@@ -571,14 +637,22 @@ int rt_peripheral_init(void)
         rtapi_print_msg(RTAPI_MSG_ERR,"Cannot open '/proc/device-tree/compatible' for read.\n");
     }
 
+    gspi_registers = GSPI_REGISTERS_AUTO;
     if (!strcmp(spi_backend, "spidev")) {
         if (bcm || rp1) {
             rtapi_print_msg(RTAPI_MSG_ERR, "spi_backend=spidev, using the generic spidev driver instead of the Raspberry Pi driver\n");
         }
         bcm = false;
         rp1 = false;
+        gspi_registers = GSPI_REGISTERS_NEVER;
+    } else if (!strcmp(spi_backend, "sunxi")) {
+        if (bcm || rp1) {
+            rtapi_print_msg(RTAPI_MSG_ERR, "ERROR: spi_backend=sunxi is for Allwinner boards, not a Raspberry Pi\n");
+            return 0;
+        }
+        gspi_registers = GSPI_REGISTERS_REQUIRED;
     } else if (strcmp(spi_backend, "auto")) {
-        rtapi_print_msg(RTAPI_MSG_ERR, "ERROR: spi_backend must be 'auto' or 'spidev'\n");
+        rtapi_print_msg(RTAPI_MSG_ERR, "ERROR: spi_backend must be 'auto', 'sunxi' or 'spidev'\n");
         return 0;
     }
 
@@ -678,7 +752,7 @@ int rt_peripheral_init(void)
 
 		if (SPI_freq == -1) SPI_freq = GSPI_DEFAULT_FREQ;
 
-		if (!gspi_init(dev, SPI_freq))
+		if (!gspi_init(dev, SPI_freq, gspi_registers))
 		{
 			return 0;
 		}
@@ -1120,9 +1194,11 @@ void spi_read()
 	int n = 2;
 	int M = 250;
 
-	// Data header
-	txData.header = PRU_READ;
-	
+	// Data header. single_frame: the one frame of the cycle is a WRITE carrying the commands
+	// spi_write() prepared last cycle; the board answers every frame with its feedback, so this
+	// frame is the READ as well. Otherwise the classic READ here and a separate WRITE in spi_write().
+	txData.header = single_frame ? PRU_WRITE : PRU_READ;
+
 	// update the PRUreset output
 	// TODO: fix this up to include RP1
 	
@@ -1165,13 +1241,34 @@ void spi_read()
 			// reset rising edge detected, try SPI transfer and reset OR PRU running
 			
 			// Transfer to and from the PRU
-			spi_transfer();
+			if (!spi_transfer())
+			{
+				// the host driver did not complete the frame, rxData holds zeros, not a reply:
+				// skip this cycle, the next one tries again
+				*(data->xferErrors) += 1;
+				if (++xfer_fail_run >= XFER_FAIL_MAX)
+				{
+					*(data->SPIstatus) = 0;
+					rtapi_print_msg(RTAPI_MSG_ERR, "%s: %d SPI transfers in a row failed on the host\n",
+									modname, xfer_fail_run);
+					xfer_fail_run = 0;
+				}
+				else if (*(data->SPIstatus))
+				{
+					dead_reckon();
+				}
+				data->SPIresetOld = *(data->SPIreset);
+				return;
+			}
+			xfer_fail_run = 0;
 
 			switch (rxData.header)		// only process valid SPI payloads. This rejects bad payloads
 			{
 				case PRU_DATA:
 					// we have received a GOOD payload from the PRU
+					bad_reply_run = 0;
 					*(data->SPIstatus) = 1;
+					*(data->PRUovertemp) = 0;
 
 					for (i = 0; i < JOINTS; i++)
 					{
@@ -1222,14 +1319,48 @@ void spi_read()
 					}
 					break;
 					
+				case PRU_OVERTEMP:
+					// the board shut itself down on MCU over temperature: outputs off, drivers disabled,
+					// until it is reset. E-stop here; the process variables still arrive (MCU temperature)
+					*(data->SPIstatus) = 0;
+					if (!*(data->PRUovertemp))
+					{
+						rtapi_print_msg(RTAPI_MSG_ERR, "%s: MCU OVER TEMPERATURE - the board switched all outputs off, "
+										"let it cool down, then reset or power cycle it\n", modname);
+					}
+					*(data->PRUovertemp) = 1;
+					for (i = 0; i < VARIABLES; i++)
+					{
+						*(data->processVariable[i]) = rxData.processVariable[i];
+					}
+					break;
+
 				case PRU_ESTOP:
 					// we have an eStop notification from the PRU
 					*(data->SPIstatus) = 0;
-					 rtapi_print_msg(RTAPI_MSG_ERR, "An E-stop is active");
+					rtapi_print_msg(RTAPI_MSG_ERR, "An E-stop is active");
+					*(data->badHeader) = (uint32_t)rxData.header;
+					*(data->badCount) += 1;
+					break;
 
 				default:
-					// we have received a BAD payload from the PRU
-					*(data->SPIstatus) = 0;
+					// we have received a BAD payload from the PRU: the reply is unusable, this cycle
+					// dead-reckons the feedback. A short run is a broken reply while the board still
+					// takes the commands; bad_reply_max in a row and the link counts as lost.
+					// On a reset attempt (SPI-status low) it stays low.
+					*(data->badHeader) = (uint32_t)rxData.header;
+					*(data->badCount) += 1;
+					++bad_reply_run;
+					if ((uint32_t)bad_reply_run > *(data->badRunMax)) *(data->badRunMax) = bad_reply_run;
+					if (bad_reply_run >= (bad_reply_max < 1 ? 1 : bad_reply_max) || !*(data->SPIstatus))
+					{
+						*(data->SPIstatus) = 0;
+						bad_reply_run = 0;
+					}
+					else
+					{
+						dead_reckon();
+					}
 
 					rtapi_print("Bad SPI payload = %x\n", rxData.header);
 					//for (i = 0; i < SPIBUFSIZE; i++) {
@@ -1292,18 +1423,20 @@ void spi_write()
 		}
 	}
 
-	if( *(data->SPIstatus) )
+	// single_frame: the commands go out with the next spi_read() frame, no second frame here
+	if( *(data->SPIstatus) && !single_frame )
 	{
 		// Transfer to and from the PRU
-		spi_transfer();
+		if (!spi_transfer()) *(data->xferErrors) += 1;
 	}
 
 }
 
 
-void spi_transfer()
+int spi_transfer()
 {
 	// send and receive data to and from the Remora PRU concurrently
+	// returns 0 when the host driver could not complete the frame (gspi: timeout or ioctl error)
 
 	if (bcm == true)
 	{
@@ -1315,8 +1448,9 @@ void spi_transfer()
 	}
 	else if (gspi == true)
 	{
-		gspi_transfer(txData.txBuffer, rxData.rxBuffer, SPIBUFSIZE);
+		return gspi_transfer(txData.txBuffer, rxData.rxBuffer, SPIBUFSIZE);
 	}
+	return 1;
 }
 
 static CONTROL parse_ctrl_type(const char *ctrl)

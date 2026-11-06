@@ -25,6 +25,7 @@
 #define PRU_READ            0x72656164      // "read" SPI payload
 #define PRU_WRITE           0x77726974      // "writ" SPI payload
 #define PRU_ESTOP           0x65737470      // "estp" SPI payload
+#define PRU_OVERTEMP        0x6f746d70      // "otmp" SPI payload - MCU over temperature shutdown (mcuTemp), latched until reset
 #define PRU_UPLOAD          0x75706c64      // "upld" SPI payload - SD card file upload while LinuxCNC is offline
 
 // Boards supporting the SD card upload over SPI (drivers/sdUpload): the STM32F4 boards with an SDIO

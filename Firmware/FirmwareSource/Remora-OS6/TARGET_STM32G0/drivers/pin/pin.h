@@ -32,8 +32,12 @@ class Pin
         uint32_t            mode;
         uint32_t            pull;
         uint32_t            speed;
-        GPIO_TypeDef*       GPIOx;
+        // an invalid pin name points at a dummy port in RAM: set() / get() then touch no real GPIO
+        // (left uninitialised they wrote to whatever address the heap held)
+        GPIO_TypeDef*       GPIOx = &invalidPort;
         GPIO_InitTypeDef    GPIO_InitStruct = {0};
+
+        static GPIO_TypeDef invalidPort;
 
     public:
 
@@ -50,6 +54,7 @@ class Pin
         void pull_up();
         void pull_down();
         PinName pinToPinName();
+        bool isValid() const { return this->GPIOx != &invalidPort; }
 
         // direct register access, the HAL calls are noticeable in the base thread on the Cortex-M0+
         inline bool get()

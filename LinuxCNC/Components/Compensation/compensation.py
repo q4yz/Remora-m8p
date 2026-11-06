@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Copyright (C) 2020 Scott Alford, scottalford75@gmail.com
 
 This program is free software; you can redistribute it and/or modify
@@ -44,7 +44,7 @@ class Compensation :
 			sys.exit()
 
 		self.filename = sys.argv[1]
-		self.method = sys.argv[2]
+		self.method = sys.argv[2] if len(sys.argv) > 2 else ""
 		
 		# default to cubic if not specified
 		if self.method == "" : self.method = "cubic"
@@ -109,9 +109,9 @@ class Compensation :
 		self.h = hal.component("compensation")
 		self.h.newpin("enable-in", hal.HAL_BIT, hal.HAL_IN)
 		self.h.newpin("enable-out", hal.HAL_BIT, hal.HAL_OUT)
-		self.h.newpin("scale", hal.HAL_FLOAT, hal.HAL_IN)
+		self.h.newpin("scale", hal.HAL_FLOAT, hal.HAL_OUT)
 		self.h.newpin("counts", hal.HAL_S32, hal.HAL_OUT)
-		self.h.newpin("clear", hal.HAL_BIT, hal.HAL_IN)
+		self.h.newpin("clear", hal.HAL_BIT, hal.HAL_OUT)
 		self.h.newpin("x-pos", hal.HAL_FLOAT, hal.HAL_IN)
 		self.h.newpin("y-pos", hal.HAL_FLOAT, hal.HAL_IN)
 		self.h.newpin("z-pos", hal.HAL_FLOAT, hal.HAL_IN)
@@ -141,6 +141,8 @@ class Compensation :
 						prevState = currentState
 						
 					# do start-up tasks
+					if not os.path.isfile(self.filename) :
+						continue	# no mesh file yet: stay in START
 					print(" %s last modified: %s" % (self.filename, time.ctime(os.path.getmtime(self.filename))))
 					
 					prevMapTime = 0
@@ -203,7 +205,7 @@ class Compensation :
 							# otherwise we loose compensation eoffset if machine power is cycled 
 							# when compensation is enable
 							compensation = self.compensate()
-							self.h["counts"] = compensation * compScale
+							self.h["counts"] = int(round(compensation * compScale))	# s32 pin
 							self.h["scale"] = self.scale
 						else :
 							self.h["counts"] = 0
@@ -217,7 +219,8 @@ class Compensation :
 						print("\nCompensation entering RESET state")
 						prevState = currentState
 
-					# set the clear output to 1
+					# ramp the offset back to 0 (the planner moves Z), then clear
+					self.h["counts"] = 0
 					self.h["clear"] = 1
 
 					# busy wait for compensation.clear (and hence axis.z.eoffset-clear) to clear the external offset
