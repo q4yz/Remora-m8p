@@ -1,7 +1,13 @@
 #ifndef CONFIGURATION_H
 #define CONFIGURATION_H
 
+#if defined(TARGET_STM32G0)
+// default without a "Threads" entry in config.txt: the 64 MHz Cortex-M0+ of the STM32G0 runs 5 step
+// generators at 20 kHz, at 40 kHz the main loop starves (no SPI replies, watchdog reset)
+#define PRU_BASEFREQ    	20000
+#else
 #define PRU_BASEFREQ    	40000 //24000   // PRU Base thread ISR update frequency (hz)
+#endif
 #define PRU_SERVOFREQ       1000            // PRU Servo thread ISR update freqency (hz)
 #define OVERSAMPLE          3
 #define SWBAUDRATE          19200           // Software serial baud rate
