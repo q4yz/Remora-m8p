@@ -16,6 +16,7 @@
         0x280 + node    STATUS          node -> hub     process data (phase 3/4)
         0x300 + node    PWM             hub  -> node    PWM duties (fans, heaters)
         0x380 + node    ANALOG          node -> hub     ADC readings (thermistors), every 100 ms
+        0x400 + node    RGB             hub  -> node    LED segment colours (WS2812 chains)
         0x580 + node    CONFIG REPLY    node -> hub     configuration transfer (phase 2)
         0x600 + node    CONFIG          hub  -> node    configuration transfer (phase 2)
         0x700 + node    HEARTBEAT       node -> hub     node alive, state
@@ -30,7 +31,7 @@
 
 #include <stdint.h>
 
-#define CAN_PROTOCOL_VERSION    6           // 2: config and digital I/O, 3: joints, 4: TMC2209, 5: analog, 6: PWM
+#define CAN_PROTOCOL_VERSION    7           // 2: config and digital I/O, 3: joints, 4: TMC2209, 5: analog, 6: PWM, 7: RGB
 
 #define CAN_NODE_MAX            15          // node numbers 1 ... 15
 
@@ -43,6 +44,7 @@
 #define CAN_ID_STATUS           0x280       // + node
 #define CAN_ID_PWM              0x300       // + node
 #define CAN_ID_ANALOG           0x380       // + node
+#define CAN_ID_RGB              0x400       // + node
 #define CAN_ID_CONFIG_REPLY     0x580       // + node
 #define CAN_ID_CONFIG           0x600       // + node
 #define CAN_ID_HEARTBEAT        0x700       // + node
@@ -85,6 +87,7 @@
 #define CFG_ERR_JOINT           9           // local joint out of range or used twice
 #define CFG_ERR_VALUE           10          // module setting out of range (e.g. TMC2209 microsteps)
 #define CFG_ERR_NOT_ANALOG      11          // analog input on a pin without ADC
+#define CFG_ERR_NOT_RGB         12          // LED chain on a pin without a free timer channel / DMA
 
 #define CAN_MODULES_MAX         16          // modules per node
 #define CAN_CONFIG_REPLY_MS     50          // hub: resend a config frame without reply after this
@@ -97,6 +100,7 @@
 #define MODULE_TMC2209          0x03        // data: UART pin, TMC_* flags, current / 10 mA, Rsense mOhm, stall threshold
 #define MODULE_ANALOG_IN        0x04        // data: ADC pin, 0, local analog index, 0, 0
 #define MODULE_PWM              0x05        // data: pin, safe duty %, local PWM index, period in base ticks (16 bit)
+#define MODULE_RGB              0x06        // data: pin, colour order (rgbColor.h), local segment, first LED (0 ...), LEDs
 
 // PWM outputs: software PWM in the node base thread, one period = period base ticks
 // (CAN_NODE_BASE_FREQ). PWM frame hub -> node: per local output i a 16-bit duty,
@@ -107,6 +111,17 @@
 #define CAN_PWM_MIN_PERIOD      40          // base ticks, 1 ms: 2.5 % resolution
 #define CAN_PWM_MIN_MS          10
 #define CAN_PWM_REFRESH_MS      100
+
+// RGB LED chains (WS2812 / SK6812): one MODULE_RGB per segment, the segments on one pin are one
+// chain of max(first + LEDs) LEDs (gaps between segments are sent off, LEDs after the last segment
+// are not driven: cover the whole chain with segments). RGB frame hub -> node: byte 0 the first
+// local segment k, then per segment k, k + 1 three bytes R, G, B (up to two per frame); on a change
+// at most every CAN_RGB_MIN_MS and every CAN_RGB_REFRESH_MS. Off while the hub or LinuxCNC is gone.
+#define CAN_NODE_RGB            4           // segments per node
+#define CAN_NODE_RGB_CHAINS     2           // LED chains (pins) per node
+#define CAN_RGB_PER_FRAME       2
+#define CAN_RGB_MIN_MS          20
+#define CAN_RGB_REFRESH_MS      1000
 
 // analog inputs: the node averages its ADC readings and sends them raw in ANALOG, byte 2i / 2i + 1
 // local input i, 0 ... 65535, little endian; the hub turns them into temperatures (thermistor)
@@ -296,6 +311,7 @@ static inline const char* canConfigError(uint8_t status)
         case CFG_ERR_JOINT:     return "joint out of range or used twice";
         case CFG_ERR_VALUE:     return "setting out of range";
         case CFG_ERR_NOT_ANALOG: return "pin has no ADC input";
+        case CFG_ERR_NOT_RGB:   return "pin is no free timer channel for an LED chain";
     }
     return "?";
 }
