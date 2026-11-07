@@ -55,7 +55,8 @@ void createRgb()
     }
     if (order < 0)
     {
-        printf("RGB: Color Order '%s', one of RGB RBG GRB GBR BRG BGR\n", module["Color Order"] | "");
+        printf("RGB: Color Order '%s': R, G, B once each, W once for RGBW (e.g. GRB, GRBW)\n",
+               module["Color Order"] | "");
         return;
     }
 
@@ -65,7 +66,7 @@ void createRgb()
         printf("RGB: invalid pin '%s'\n", pinName);
         return;
     }
-    Ws2812* strip = Ws2812::create(pin.pinToPinName(), leds, "RGB");
+    Ws2812* strip = Ws2812::create(pin.pinToPinName(), leds, rgbBytesPerLed((uint8_t)order), "RGB");
     if (!strip) return;
 
     Rgb* rgb = new Rgb(strip, leds, (uint8_t)order);
@@ -91,7 +92,8 @@ void createRgb()
 
     chains[chainCount++] = rgb;
     servoThread->registerModule(rgb);
-    printf("RGB: %s, %d LEDs, %s\n", pinName, leds, rgbOrderNames[order]);
+    char orderName[5];
+    printf("RGB: %s, %d LEDs, %s\n", pinName, leds, rgbOrderName((uint8_t)order, orderName));
 }
 
 
@@ -113,7 +115,7 @@ Rgb::Rgb(Ws2812* strip, int leds, uint8_t order) :
     dirty(true),
     lastSend(0)
 {
-    this->bytes = new uint8_t[leds * 3];
+    this->bytes = new uint8_t[leds * rgbBytesPerLed(order)];
     for (int i = 0; i < RGB_SEGMENTS_MAX; i++) this->color[i] = 0;
 }
 
@@ -154,14 +156,15 @@ void Rgb::service()
     if (!this->dirty && (now - this->lastSend) < RGB_REFRESH_MS) return;
 
     this->dirty = false;                    // first: a change during the build sends again
-    memset(this->bytes, 0, this->leds * 3);
+    int bpl = rgbBytesPerLed(this->order);
+    memset(this->bytes, 0, this->leds * bpl);
     for (int i = 0; i < this->segCount; i++)
     {
-        uint8_t b[3];
+        uint8_t b[RGB_MAX_BYTES];
         rgbBytes(this->color[i], this->order, b);
         for (int k = this->segFirst[i]; k < this->segFirst[i] + this->segLeds[i]; k++)
         {
-            memcpy(&this->bytes[3 * k], b, 3);
+            memcpy(&this->bytes[bpl * k], b, bpl);
         }
     }
     if (this->strip->send(this->bytes)) this->lastSend = now;

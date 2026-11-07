@@ -710,6 +710,41 @@ int main(int argc, char** argv) {
         simSafe = true;
         simSp[4] = simSp[5] = 0.0f;
     }
+    else if (sc == "rgbw") {
+        /* colour orders: R, G, B once each, W once, any position, any case */
+        char name[5];
+        CHECK(rgbOrderCode("GRB") == 2 && rgbOrderCode("grb") == 2 && rgbOrderCode("") == RGB_ORDER_GRB);
+        CHECK(rgbOrderCode("GRBW") == 26 && rgbOrderCode("WRGB") == 6 && rgbOrderCode("RGWB") == 18);
+        CHECK(!strcmp(rgbOrderName(26, name), "GRBW") && !strcmp(rgbOrderName(6, name), "WRGB") &&
+              !strcmp(rgbOrderName(18, name), "RGWB") && !strcmp(rgbOrderName(5, name), "BGR"));
+        CHECK(rgbOrderCode("GGRB") < 0 && rgbOrderCode("RGBWW") < 0 && rgbOrderCode("RGW") < 0 &&
+              rgbOrderCode("RGBX") < 0 && rgbOrderCode("RGBR") < 0);
+        CHECK(rgbBytesPerLed(2) == 3 && rgbBytesPerLed(26) == 4);
+        /* Stealthburner SK6812 RGBW, GRBW: white from the colour, W = min(R, G, B) */
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        const uint8_t PD3 = CAN_PIN(3, 3);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addRgb(1, "PD_3", 4, 1, 1, 3, "GRBW"));
+        CHECK(hub.addRgb(1, "PD_3", 5, 2, 2, 3, "GRBW"));
+        CHECK(!hub.addRgb(1, "PD_3", 3, 3, 1, 3, "GRB"));                                 /* RGB and RGBW on one chain */
+        run(hub, {&a}, now, 1500);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && a.io.rgbLeds[PD3] == 3 && a.io.rgbBpl[PD3] == 4);
+        auto led = [&](int i) { const uint8_t* b = &a.io.rgb[PD3][4 * i]; return (uint32_t)b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]; };
+        simSafe = false;
+        simSp[4] = 16777215.0f;                                                           /* M150 R255 G255 B255: white */
+        simSp[5] = 16728064.0f;                                                           /* R255 G64 B0: no white part */
+        run(hub, {&a}, now, 50);
+        printf("  LEDs (GRBW bytes): %08x %08x %08x\n", led(0), led(1), led(2));
+        CHECK(led(0) == 0x000000FF);                                                      /* white LED only */
+        CHECK(led(1) == 0x40FF0000 && led(2) == 0x40FF0000);
+        simSp[4] = (float)0xFF8080; run(hub, {&a}, now, 50);                              /* pale red: 0x80 white */
+        printf("  0xFF8080: %08x\n", led(0));
+        CHECK(led(0) == 0x007F0080);
+        simSafe = true; run(hub, {&a}, now, 50);
+        CHECK(led(0) == 0 && led(1) == 0 && led(2) == 0);
+        simSp[4] = simSp[5] = 0.0f;
+    }
     else if (sc == "rgb-config") {
         RemoraCAN hc; CanHub hub(&hc);
         hub.addNode("0e0d81e4210c", 1, "");

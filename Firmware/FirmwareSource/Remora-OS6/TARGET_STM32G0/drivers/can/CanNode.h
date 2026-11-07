@@ -64,7 +64,7 @@ typedef struct
     uint8_t  leds;                      // max(first + LEDs) of its segments
     bool     dirty;                     // send again (colour or safe state changed, send failed)
     uint32_t lastSend;                  // ms
-    uint8_t  bytes[RGB_MAX_LEDS * 3];
+    uint8_t  bytes[RGB_MAX_LEDS * RGB_MAX_BYTES];
 } canNodeRgbChain_t;
 
 typedef struct

@@ -31,6 +31,7 @@ class Ws2812
         volatile uint32_t*      ccr;
         PinName                 pin;
         int                     leds;
+        int                     bytesPerLed;    // 3 RGB, 4 RGBW
         uint16_t*               buffer;         // one compare value per bit, 2 zeros at the end
         int                     length;
         bool                    running;
@@ -44,10 +45,10 @@ class Ws2812
     public:
 
         // nullptr (and why on the console) when the pin has no free timer channel or no DMA is left
-        static Ws2812* create(PinName pin, int leds, const char* who);
+        static Ws2812* create(PinName pin, int leds, int bytesPerLed, const char* who);
         static bool capable(PinName pin);       // the pin is a channel of a supported timer
 
-        // start sending leds * 3 bytes (already in the chip's byte order); false while the last
+        // start sending leds * bytesPerLed bytes (in the chip's byte order); false while the last
         // transfer is still running or its reset time (> 280 us low) has not passed: try again
         bool send(const uint8_t* bytes);
         bool busy(void);

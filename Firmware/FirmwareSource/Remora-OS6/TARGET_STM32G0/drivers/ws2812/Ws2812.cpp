@@ -75,9 +75,9 @@ bool Ws2812::capable(PinName pin)
 }
 
 
-Ws2812* Ws2812::create(PinName pin, int leds, const char* who)
+Ws2812* Ws2812::create(PinName pin, int leds, int bytesPerLed, const char* who)
 {
-    if (leds < 1) return nullptr;
+    if (leds < 1 || bytesPerLed < 3 || bytesPerLed > 4) return nullptr;
 
     const PinMap* map = findChannel(pin, true);
     if (!map)
@@ -97,7 +97,8 @@ Ws2812* Ws2812::create(PinName pin, int leds, const char* who)
     s->tim = (TIM_TypeDef*)map->peripheral;
     s->pin = pin;
     s->leds = leds;
-    s->length = leds * 24 + 2;
+    s->bytesPerLed = bytesPerLed;
+    s->length = leds * bytesPerLed * 8 + 2;
     s->buffer = new uint16_t[s->length];
     memset(s->buffer, 0, s->length * sizeof(uint16_t));
     s->running = false;
@@ -180,7 +181,7 @@ bool Ws2812::send(const uint8_t* bytes)
     }
 
     uint16_t* b = this->buffer;
-    for (int i = 0; i < this->leds * 3; i++)
+    for (int i = 0; i < this->leds * this->bytesPerLed; i++)
     {
         uint8_t v = bytes[i];
         for (int k = 7; k >= 0; k--) *b++ = (v >> k) & 1 ? this->bit1 : this->bit0;
