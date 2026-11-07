@@ -25,8 +25,8 @@ uint16_t canIoAnalogRead(uint8_t pin);      // 0 ... 65535, main loop only (a co
 
 // WS2812 LED chains on a timer channel pin (timer + DMA, no interrupts held)
 bool canIoRgbCapable(uint8_t pin);          // the pin is a channel of a timer that can drive a chain
-bool canIoRgbConfigure(uint8_t pin, int leds);  // false: no free timer / DMA channel
-bool canIoRgbSend(uint8_t pin, const uint8_t* bytes);   // leds * 3 bytes; false: busy, try again
+bool canIoRgbConfigure(uint8_t pin, int leds, int bytesPerLed);  // false: no free timer / DMA channel
+bool canIoRgbSend(uint8_t pin, const uint8_t* bytes);   // leds * bytesPerLed bytes; false: busy, try again
 void canIoRgbRelease(uint8_t pin);
 
 #endif

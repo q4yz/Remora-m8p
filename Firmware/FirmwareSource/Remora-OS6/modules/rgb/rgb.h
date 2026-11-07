@@ -11,9 +11,11 @@
         { "Type": "RGB", "Thread": "Servo", "Comment": "case light",
           "Pin": "PA_9", "Chain Count": 10, "Color Order": "GRB", "SP[i]": 4 }
 
-    Segments (LED numbers from 1, like Klipper's INDEX), Stealthburner:
+    Segments (LED numbers from 1, like Klipper's INDEX), Stealthburner
+    with SK6812 RGBW chips (the white LED from the colour, rgbColor.h):
 
         { "Type": "RGB", "Thread": "Servo", "Pin": "PB_15", "Chain Count": 3,
+          "Color Order": "GRBW",
           "Segments": [ { "First": 1, "Count": 1, "SP[i]": 4 },
                         { "First": 2, "Count": 2, "SP[i]": 5 } ] }
 

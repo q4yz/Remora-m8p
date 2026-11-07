@@ -16,7 +16,8 @@ struct SimIo
     int configures = 0;
     int rgbLeds[96] = {};         /* LED chain configured on the pin, 0: none */
     int rgbSends[96] = {};        /* transfers to the chain */
-    uint8_t rgb[96][64 * 3] = {}; /* the bytes of the last transfer */
+    uint8_t rgb[96][64 * 4] = {}; /* the bytes of the last transfer */
+    int rgbBpl[96] = {};          /* bytes per LED, 3 or 4 */
 };
 
 extern SimIo* simIo;

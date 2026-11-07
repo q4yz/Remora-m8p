@@ -622,7 +622,8 @@ bool CanHub::addRgb(int node, const char* pinName, int sp, int first, int count,
     if (order < 0 || leds < 1 || leds > RGB_MAX_LEDS || first < 1 || count < 1 || first - 1 + count > leds)
     {
         printf("CAN: node %d: RGB %s: Chain Count 1 ... %d, segment First %d Count %d inside it, "
-               "Color Order RGB RBG GRB GBR BRG BGR\n", node, canPinName(pin, name), RGB_MAX_LEDS, first, count);
+               "Color Order R, G, B once each, W once for RGBW (GRB, GRBW, ...)\n", node, canPinName(pin, name),
+               RGB_MAX_LEDS, first, count);
         return false;
     }
 
@@ -680,8 +681,9 @@ bool CanHub::addRgb(int node, const char* pinName, int sp, int first, int count,
     m[4] = (uint8_t)(first - 1);
     m[5] = (uint8_t)count;
 
+    char orderText[5];
     printf("CAN: node %d module %d: RGB %s, LEDs %d ... %d, %s, LinuxCNC SP[%d]\n", node, n->moduleCount,
-           canPinName(pin, name), first, first + count - 1, rgbOrderNames[order], sp);
+           canPinName(pin, name), first, first + count - 1, rgbOrderName((uint8_t)order, orderText), sp);
     return true;
 }
 

@@ -115,9 +115,12 @@ Module types (pins as `port << 4 | number`, port 0 = A, `0xFF` none):
 - `0x04` analog input, data: ADC pin, 0, node local analog index (0 ... 3).
 - `0x05` PWM output, data: pin, safe duty (%), node local PWM index (0 ... 3),
   period in base ticks (16-bit little endian, 25 µs each, at least 40 = 1 ms).
-- `0x06` RGB LED segment, data: pin, colour order (0 RGB, 1 RBG, 2 GRB, 3 GBR,
-  4 BRG, 5 BGR), node local segment (0 ... 3), first LED (0 ...), LEDs. The
-  segments on one pin are one chain (same colour order), up to 2 chains.
+- `0x06` RGB LED segment, data: pin, colour order, node local segment
+  (0 ... 3), first LED (0 ...), LEDs. Colour order: the permutation of R, G,
+  B (0 RGB, 1 RBG, 2 GRB, 3 GBR, 4 BRG, 5 BGR) + 6 × the position of W
+  (0: no W, 1 ... 4: W as byte 1 ... 4), e.g. GRB = 2, GRBW = 26
+  (`drivers/rgb/rgbColor.h`). The segments on one pin are one chain (same
+  colour order), up to 2 chains.
 
 ## Process data (phase 3)
 
@@ -298,7 +301,11 @@ An `"RGB"` module in a node entry, same keys as the hub's own RGB module
 Without `"Segments"`, `"SP[i]"` colours the whole chain. Each segment shows
 the colour of its LinuxCNC set point as `0xRRGGBB` (`remora.SP.4` =
 `R * 65536 + G * 256 + B`, exact in a float; e.g. `M150 R255 G64 B0` writes
-16728064). `"Color Order"` is the chips' byte order, default GRB (WS2812).
+16728064). `"Color Order"` is the chips' byte order like Klipper's
+`color_order`, default GRB (WS2812); with a W for RGBW chips, e.g. `"GRBW"`
+for the SK6812 RGBW of a Stealthburner. The white LED is not transmitted:
+the node takes it from the colour, W = min(R, G, B) and R, G, B less that,
+so white (R = G = B) lights the white LED only.
 LED numbers count from 1 like Klipper's `INDEX`, up to 64 LEDs per chain,
 up to 4 segments per node. The SPs must not be used twice (hub or nodes).
 On a node the chain ends with the last segment: LEDs after it are not

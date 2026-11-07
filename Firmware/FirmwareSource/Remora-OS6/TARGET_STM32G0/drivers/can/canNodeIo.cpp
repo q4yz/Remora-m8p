@@ -163,14 +163,14 @@ bool canIoRgbCapable(uint8_t pin)
 }
 
 
-bool canIoRgbConfigure(uint8_t pin, int leds)
+bool canIoRgbConfigure(uint8_t pin, int leds, int bytesPerLed)
 {
     canIoRgbRelease(pin);
     int i = 0;
     while (i < RGB_CHAINS && rgbStrip[i]) i++;
     if (i == RGB_CHAINS) return false;
     clockOn(portOf(pin));
-    rgbStrip[i] = Ws2812::create((PinName)pin, leds, "RGB");
+    rgbStrip[i] = Ws2812::create((PinName)pin, leds, bytesPerLed, "RGB");
     rgbPin[i] = pin;
     return rgbStrip[i] != nullptr;
 }

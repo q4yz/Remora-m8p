@@ -338,9 +338,10 @@ void CanNode::handleConfig(const canFrame_t& frame)
             }
             else if (m.type == MODULE_RGB)
             {
+                char orderName[5];
                 printf("CONFIG: module %d: RGB segment %d, %s, LEDs %d ... %d, %s\n", c.index + 1, m.bit,
                        canPinName(m.pin, name), m.dirPin + 1, m.dirPin + m.enablePin,
-                       rgbOrderNames[m.flags < RGB_ORDERS ? m.flags : RGB_ORDER_GRB]);
+                       rgbOrderName(m.flags, orderName));
             }
             else if (m.type == MODULE_TMC2209)
             {
@@ -490,7 +491,7 @@ void CanNode::applyConfig()
     for (int c = 0; c < this->rgbChainCount; c++)
     {
         canNodeRgbChain_t& chain = this->rgbChain[c];
-        if (!canIoRgbConfigure(chain.pin, chain.leds))
+        if (!canIoRgbConfigure(chain.pin, chain.leds, rgbBytesPerLed(chain.order)))
         {
             char name[6];
             printf("RGB: no timer / DMA for the chain on %s\n", canPinName(chain.pin, name));
@@ -616,16 +617,17 @@ void CanNode::serviceRgb()
         if (!chain.leds) continue;
         if (!chain.dirty && (this->now - chain.lastSend) < CAN_RGB_REFRESH_MS) continue;
 
-        memset(chain.bytes, 0, chain.leds * 3);
+        int bpl = rgbBytesPerLed(chain.order);
+        memset(chain.bytes, 0, chain.leds * bpl);
         if (!this->safe)
         {
             for (int i = 0; i < this->rgbCount; i++)
             {
                 const canNodeRgbSegment_t& s = this->rgbSeg[i];
                 if (s.chain != c) continue;
-                uint8_t b[3];
+                uint8_t b[RGB_MAX_BYTES];
                 rgbBytes(s.color, chain.order, b);
-                for (int l = s.first; l < s.first + s.count; l++) memcpy(&chain.bytes[3 * l], b, 3);
+                for (int l = s.first; l < s.first + s.count; l++) memcpy(&chain.bytes[bpl * l], b, bpl);
             }
         }
         if (canIoRgbSend(chain.pin, chain.bytes))

@@ -45,10 +45,11 @@ bool canIoRgbCapable(uint8_t pin)
 {
     return pin == CAN_PIN(3, 3) || pin == CAN_PIN(0, 9) || pin == CAN_PIN(1, 15) || pin == CAN_PIN(2, 6);
 }
-bool canIoRgbConfigure(uint8_t pin, int leds)
+bool canIoRgbConfigure(uint8_t pin, int leds, int bytesPerLed)
 {
     if (!canIoRgbCapable(pin) || leds < 1 || leds > 64) return false;
     simIo->rgbLeds[pin] = leds;
+    simIo->rgbBpl[pin] = bytesPerLed;
     simIo->rgbSends[pin] = 0;
     memset(simIo->rgb[pin], 0xEE, sizeof(simIo->rgb[pin]));     /* not sent yet */
     return true;
@@ -56,7 +57,7 @@ bool canIoRgbConfigure(uint8_t pin, int leds)
 bool canIoRgbSend(uint8_t pin, const uint8_t* bytes)
 {
     if (!simIo->rgbLeds[pin]) return false;
-    memcpy(simIo->rgb[pin], bytes, simIo->rgbLeds[pin] * 3);
+    memcpy(simIo->rgb[pin], bytes, simIo->rgbLeds[pin] * simIo->rgbBpl[pin]);
     simIo->rgbSends[pin]++;
     return true;
 }
