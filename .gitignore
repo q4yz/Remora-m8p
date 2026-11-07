@@ -13,3 +13,4 @@ Firmware/FirmwareSource/Remora-OS6/TARGET_SKRV1_4/drivers/comms/MODDMA/MODDMA.cp
 Firmware/FirmwareSource/Remora-OS6/TARGET_SKRV1_4/drivers/comms/MODDMA/MODDMA.h
 Firmware/FirmwareSource/Remora-OS6/TARGET_SKRV1_4/drivers/comms/MODDMA/SETUP.cpp
 Firmware/FirmwareSource/Remora-OS6/.mbed
+__pycache__/
