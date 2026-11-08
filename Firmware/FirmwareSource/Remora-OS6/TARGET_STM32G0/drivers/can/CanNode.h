@@ -23,7 +23,11 @@
     analog   ADC inputs (thermistors), averaged, raw to the hub in ANALOG
     PWM      software PWM outputs in baseTick (fans, heaters), duties from PWM,
              the safe duty while the hub or LinuxCNC is gone
+    RGB      WS2812 LED chains (timer + DMA, canIoRgb*), segment colours from
+             RGB, off while the hub or LinuxCNC is gone
 ************************************************************************/
+
+#include "drivers/rgb/rgbColor.h"
 
 #define NODE_STEPBIT            22          // DDS accumulator bit that makes a step, as the Remora stepgen
 
@@ -51,6 +55,25 @@ typedef struct
     uint8_t           safeDuty;         // % while the hub / LinuxCNC is gone
     uint16_t          duty;             // last commanded, 0 ... CAN_PWM_FULL
 } canNodePwm_t;
+
+// an LED chain: the RGB segments on one pin
+typedef struct
+{
+    uint8_t  pin;
+    uint8_t  order;                     // rgbColor.h
+    uint8_t  leds;                      // max(first + LEDs) of its segments
+    bool     dirty;                     // send again (colour or safe state changed, send failed)
+    uint32_t lastSend;                  // ms
+    uint8_t  bytes[RGB_MAX_LEDS * RGB_MAX_BYTES];
+} canNodeRgbChain_t;
+
+typedef struct
+{
+    uint8_t  chain;
+    uint8_t  first;                     // 0 based
+    uint8_t  count;
+    uint32_t color;                     // 0xRRGGBB, last commanded
+} canNodeRgbSegment_t;
 
 // a step generator, the base thread interrupt (baseTick) and the main loop share it
 typedef struct
@@ -124,6 +147,14 @@ class CanNode
         uint8_t     pwmCount;       // local outputs 0 ... pwmCount - 1 in PWM
         uint32_t    pwmFrames;      // PWM frames since the configuration (debug)
 
+        // RGB LED chains and their segments (local segment i)
+        canNodeRgbChain_t   rgbChain[CAN_NODE_RGB_CHAINS];
+        uint8_t     rgbChainCount;
+        canNodeRgbSegment_t rgbSeg[CAN_NODE_RGB];
+        uint8_t     rgbCount;       // local segments 0 ... rgbCount - 1 in RGB
+        bool        rgbSafe;        // safe state of the last transfer
+        uint32_t    rgbFrames;      // RGB frames since the configuration (debug)
+
         bool sendLssReply(void);
         void sendHeartbeat(void);
         void sendConfigReply(uint8_t cmd, uint8_t index, uint8_t status, uint8_t detail);
@@ -138,6 +169,8 @@ class CanNode
         void serviceAnalog(void);
         void handlePwm(const canFrame_t& frame);
         void writePwm(void);
+        void handleRgb(const canFrame_t& frame);
+        void serviceRgb(void);
         void setJointEnable(canNodeJoint_t& j, bool enabled);
         void stopJoints(void);
         uint8_t checkModule(const canFrame_t& frame, canNodeModule_t& m);
@@ -175,6 +208,10 @@ class CanNode
         uint16_t getPwmOnTicks(int i) { return this->pwm[i].onTicks; }
         uint16_t getPwmPeriod(int i) { return this->pwm[i].period; }
         uint32_t getPwmFrames(void) { return this->pwmFrames; }
+        uint8_t getRgbCount(void) { return this->rgbCount; }
+        uint8_t getRgbChainCount(void) { return this->rgbChainCount; }
+        uint32_t getRgbColor(int i) { return this->rgbSeg[i].color; }
+        uint32_t getRgbFrames(void) { return this->rgbFrames; }
 };
 
 #endif

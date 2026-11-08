@@ -1,6 +1,7 @@
 /* simulated node GPIO: each simulated node has its own SimIo, selected before its service() */
 #include "canNodeIoSim.h"
 #include "canProtocol.h"
+#include <string.h>
 
 SimIo* simIo = nullptr;
 
@@ -38,3 +39,26 @@ void canIoSetOutput(uint8_t pin, bool output)
     simIo->output[pin] = output;
     if (output) simIo->level[pin] = simIo->latch[pin];
 }
+
+/* LED chains on the timer channel pins of the EBB42 / SB2209 / M8P RGB headers: PD_3, PA_9, PB_15, PC_6 */
+bool canIoRgbCapable(uint8_t pin)
+{
+    return pin == CAN_PIN(3, 3) || pin == CAN_PIN(0, 9) || pin == CAN_PIN(1, 15) || pin == CAN_PIN(2, 6);
+}
+bool canIoRgbConfigure(uint8_t pin, int leds, int bytesPerLed)
+{
+    if (!canIoRgbCapable(pin) || leds < 1 || leds > 64) return false;
+    simIo->rgbLeds[pin] = leds;
+    simIo->rgbBpl[pin] = bytesPerLed;
+    simIo->rgbSends[pin] = 0;
+    memset(simIo->rgb[pin], 0xEE, sizeof(simIo->rgb[pin]));     /* not sent yet */
+    return true;
+}
+bool canIoRgbSend(uint8_t pin, const uint8_t* bytes)
+{
+    if (!simIo->rgbLeds[pin]) return false;
+    memcpy(simIo->rgb[pin], bytes, simIo->rgbLeds[pin] * simIo->rgbBpl[pin]);
+    simIo->rgbSends[pin]++;
+    return true;
+}
+void canIoRgbRelease(uint8_t pin) { simIo->rgbLeds[pin] = 0; }

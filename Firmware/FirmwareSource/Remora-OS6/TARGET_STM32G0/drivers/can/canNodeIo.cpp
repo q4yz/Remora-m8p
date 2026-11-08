@@ -8,6 +8,7 @@
 #include "hal/analogin_api.h"
 #include "hal/pinmap.h"
 #include "PeripheralPins.h"
+#include "drivers/ws2812/Ws2812.h"
 
 static GPIO_TypeDef* portOf(uint8_t pin)
 {
@@ -141,6 +142,54 @@ uint16_t canIoAnalogRead(uint8_t pin)
 {
     analogin_t* a = analogOf(pin);
     return a ? analogin_read_u16(a) : 0;
+}
+
+
+// WS2812 LED chains: CAN pin byte = mbed PinName (port << 4 | number) on the STM32
+#define RGB_CHAINS  CAN_NODE_RGB_CHAINS
+static Ws2812* rgbStrip[RGB_CHAINS];
+static uint8_t rgbPin[RGB_CHAINS];
+
+static int rgbSlot(uint8_t pin)
+{
+    for (int i = 0; i < RGB_CHAINS; i++) if (rgbStrip[i] && rgbPin[i] == pin) return i;
+    return -1;
+}
+
+
+bool canIoRgbCapable(uint8_t pin)
+{
+    return canIoPinExists(pin) && Ws2812::capable((PinName)pin);
+}
+
+
+bool canIoRgbConfigure(uint8_t pin, int leds, int bytesPerLed)
+{
+    canIoRgbRelease(pin);
+    int i = 0;
+    while (i < RGB_CHAINS && rgbStrip[i]) i++;
+    if (i == RGB_CHAINS) return false;
+    clockOn(portOf(pin));
+    rgbStrip[i] = Ws2812::create((PinName)pin, leds, bytesPerLed, "RGB");
+    rgbPin[i] = pin;
+    return rgbStrip[i] != nullptr;
+}
+
+
+bool canIoRgbSend(uint8_t pin, const uint8_t* bytes)
+{
+    int i = rgbSlot(pin);
+    return i >= 0 && rgbStrip[i]->send(bytes);
+}
+
+
+void canIoRgbRelease(uint8_t pin)
+{
+    int i = rgbSlot(pin);
+    if (i < 0) return;
+    rgbStrip[i]->release();
+    delete rgbStrip[i];
+    rgbStrip[i] = nullptr;
 }
 
 #endif

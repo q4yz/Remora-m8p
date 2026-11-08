@@ -1,5 +1,6 @@
 #include "CanHub.h"
 #include "NodeTmc2209.h"
+#include "drivers/rgb/rgbColor.h"
 
 #include <string.h>
 #include <math.h>
@@ -591,6 +592,147 @@ void CanHub::servicePwm(uint32_t now, const volatile float* setPoint)
 }
 
 
+bool CanHub::addRgb(int node, const char* pinName, int sp, int first, int count, int leds, const char* orderName)
+{
+    canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
+    uint8_t pin;
+    char name[6];
+
+    if (!n)
+    {
+        printf("CAN: module for node %d, which is not configured\n", node);
+        return false;
+    }
+    if (n->moduleCount >= CAN_MODULES_MAX)
+    {
+        printf("CAN: node %d: more than %d modules\n", node, CAN_MODULES_MAX);
+        return false;
+    }
+    if (n->rgbCount >= CAN_NODE_RGB)
+    {
+        printf("CAN: node %d: more than %d RGB segments\n", node, CAN_NODE_RGB);
+        return false;
+    }
+    if (!canParsePin(pinName, &pin))
+    {
+        printf("CAN: node %d: RGB, invalid pin '%s'\n", node, pinName ? pinName : "");
+        return false;
+    }
+    int order = rgbOrderCode(orderName);
+    if (order < 0 || leds < 1 || leds > RGB_MAX_LEDS || first < 1 || count < 1 || first - 1 + count > leds)
+    {
+        printf("CAN: node %d: RGB %s: Chain Count 1 ... %d, segment First %d Count %d inside it, "
+               "Color Order R, G, B once each, W once for RGBW (GRB, GRBW, ...)\n", node, canPinName(pin, name),
+               RGB_MAX_LEDS, first, count);
+        return false;
+    }
+
+    // segments of one chain share the pin (and its colour order), any other module must not use it
+    int chains = 0;
+    bool chainKnown = false;
+    for (int i = 0; i < n->moduleCount; i++)
+    {
+        const uint8_t* m = n->modules[i];
+        bool first_of_pin = true;
+        for (int k = 0; k < i; k++)
+        {
+            if (n->modules[k][0] == MODULE_RGB && n->modules[k][1] == m[1]) first_of_pin = false;
+        }
+        if (m[0] == MODULE_RGB && first_of_pin) chains++;
+        if (m[1] != pin && !(m[0] == MODULE_STEPGEN && (m[4] == pin || m[5] == pin))) continue;
+        if (m[0] != MODULE_RGB)
+        {
+            printf("CAN: node %d: pin %s used twice\n", node, canPinName(pin, name));
+            return false;
+        }
+        if (m[2] != (uint8_t)order)
+        {
+            printf("CAN: node %d: RGB %s: two colour orders on one chain\n", node, canPinName(pin, name));
+            return false;
+        }
+        chainKnown = true;
+    }
+    if (!chainKnown && chains >= CAN_NODE_RGB_CHAINS)
+    {
+        printf("CAN: node %d: more than %d RGB chains\n", node, CAN_NODE_RGB_CHAINS);
+        return false;
+    }
+    if (sp < 0 || sp >= CAN_HUB_VARIABLES)
+    {
+        printf("CAN: node %d: RGB %s, SP[i] %d out of range 0 ... %d\n", node, canPinName(pin, name), sp,
+               CAN_HUB_VARIABLES - 1);
+        return false;
+    }
+    if (this->usedSetPoints & (1u << sp))
+    {
+        printf("CAN: node %d: RGB %s, SP[i] %d is already used\n", node, canPinName(pin, name), sp);
+        return false;
+    }
+
+    uint8_t local = n->rgbCount++;
+    n->rgbSp[local] = (uint8_t)sp;
+    this->usedSetPoints |= (uint8_t)(1u << sp);
+
+    uint8_t* m = n->modules[n->moduleCount++];
+    m[0] = MODULE_RGB;
+    m[1] = pin;
+    m[2] = (uint8_t)order;
+    m[3] = local;
+    m[4] = (uint8_t)(first - 1);
+    m[5] = (uint8_t)count;
+
+    char orderText[5];
+    printf("CAN: node %d module %d: RGB %s, LEDs %d ... %d, %s, LinuxCNC SP[%d]\n", node, n->moduleCount,
+           canPinName(pin, name), first, first + count - 1, rgbOrderName((uint8_t)order, orderText), sp);
+    return true;
+}
+
+
+void CanHub::sendRgb(canNodeEntry_t* n, const volatile float* setPoint, uint32_t now)
+{
+    uint32_t color[CAN_NODE_RGB];
+    bool changed = !n->rgbSent;
+    for (int i = 0; i < n->rgbCount; i++)
+    {
+        color[i] = rgbFromSetPoint(setPoint[n->rgbSp[i]]);
+        if (color[i] != n->rgbColor[i]) changed = true;
+    }
+
+    uint32_t since = now - n->lastRgb;
+    if (!(changed && since >= CAN_RGB_MIN_MS) && since < CAN_RGB_REFRESH_MS) return;
+
+    for (int k = 0; k < n->rgbCount; k += CAN_RGB_PER_FRAME)
+    {
+        canFrame_t f;
+        f.id = CAN_ID_RGB + n->node;
+        f.extended = false;
+        f.data[0] = (uint8_t)k;
+        int segs = n->rgbCount - k < CAN_RGB_PER_FRAME ? n->rgbCount - k : CAN_RGB_PER_FRAME;
+        for (int i = 0; i < segs; i++)
+        {
+            f.data[1 + 3 * i] = (uint8_t)(color[k + i] >> 16);
+            f.data[2 + 3 * i] = (uint8_t)(color[k + i] >> 8);
+            f.data[3 + 3 * i] = (uint8_t)color[k + i];
+        }
+        f.len = (uint8_t)(1 + 3 * segs);
+        if (!this->can->send(f)) return;    // TX queue full: all of them again in the next loop pass
+    }
+    for (int i = 0; i < n->rgbCount; i++) n->rgbColor[i] = color[i];
+    n->lastRgb = now;
+    n->rgbSent = true;
+}
+
+
+void CanHub::serviceRgb(uint32_t now, const volatile float* setPoint)
+{
+    for (int i = 0; i < this->nodeCount; i++)
+    {
+        canNodeEntry_t* n = &this->nodes[i];
+        if (n->rgbCount && n->alive && n->cfgState == CFG_STATE_DONE) this->sendRgb(n, setPoint, now);
+    }
+}
+
+
 uint8_t CanHub::getTmcStatus(int node, int driver)
 {
     canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
@@ -831,6 +973,7 @@ void CanHub::handleConfigReply(const canFrame_t& frame, uint32_t now)
         for (int i = 0; i < n->moduleCount; i++) n->tmcStatus[i] = TMC_STATUS_NONE;
         n->analogValid = false;             // temperatures from the next ANALOG frame
         n->pwmSent = false;                 // the duties right away
+        n->rgbSent = false;                 // the colours too
         return;
     }
 
