@@ -1,0 +1,103 @@
+name: firmware
+
+# CI: the PC tests of the CAN and SPI link logic, and every maintained firmware target built
+#     with the same toolchain as the committed binaries (GNU Arm 10.3-2021.10, mbed-cli 1)
+# CD: the binaries as a build artifact on every run, attached to a GitHub release for a v* tag
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: PC tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: CAN hub / node
+        run: sh Firmware/Tests/can/run.sh
+      - name: SPI link
+        run: sh Firmware/Tests/link/run.sh
+
+  firmware:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # names of the TARGETS table in Firmware/build.sh
+        target: [MANTA8, MANTA8_DEBUG, EBB42, EBB_SB2209, OCTOPUS_446, OCTOPUS_429]
+    steps:
+      - uses: actions/checkout@v4
+
+      # mbed-os is a gitlink without .gitmodules: fetch exactly the pinned upstream commit
+      - name: mbed-os commit
+        id: mbedos
+        run: echo "sha=$(git rev-parse HEAD:Firmware/FirmwareSource/Remora-OS6/mbed-os)" >> "$GITHUB_OUTPUT"
+      - name: Cache mbed-os
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: Firmware/FirmwareSource/Remora-OS6/mbed-os
+          key: mbed-os-${{ steps.mbedos.outputs.sha }}
+      - name: Fetch mbed-os
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: Firmware/FirmwareSource/Remora-OS6/mbed-os
+        run: |
+          git init -q .
+          git remote add origin https://github.com/ARMmbed/mbed-os.git
+          git fetch -q --depth 1 origin ${{ steps.mbedos.outputs.sha }}
+          git checkout -q FETCH_HEAD
+
+      - uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '10.3-2021.10'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # mbed-os's requirements.txt pins 2019 versions that no longer install; these are the
+      # packages mbed compile uses (pyelftools > 0.28 breaks the mbed tools)
+      - name: mbed CLI
+        run: |
+          pip install mbed-cli intelhex jinja2 jsonschema future six "pyelftools==0.28" colorama \
+            prettytable pyyaml click cmsis-pack-manager pycryptodome cbor requests pyserial psutil
+
+      - name: Build
+        run: bash Firmware/build.sh ${{ matrix.target }} --out out
+
+      # the committed binary should be what this source builds; only a warning for now: the
+      # Windows and Linux builds of the same toolchain are not proven to be byte identical
+      - name: FirmwareBin up to date
+        run: |
+          if ! git diff --quiet -- Firmware/FirmwareBin; then
+            echo "::warning title=FirmwareBin::${{ matrix.target }}: the committed firmware.bin differs from this build - run Firmware/build.sh and commit"
+            git diff --stat -- Firmware/FirmwareBin
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.target }}
+          path: out/${{ matrix.target }}.bin
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [tests, firmware]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.bin
+          generate_release_notes: true
