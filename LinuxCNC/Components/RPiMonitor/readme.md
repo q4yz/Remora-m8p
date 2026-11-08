@@ -8,7 +8,7 @@ rpi_monitor.py
 
 ## DESCRIPTION
 
-A userspace HAL component that publishes the Raspberry Pi's SoC temperature and CPU load as HAL pins, so they can be watched in halmeter/halscope, compared against a limit with a `comp`, or wired anywhere else in HAL. Pure Python standard library plus LinuxCNC's own `hal` module — nothing to install.
+A userspace HAL component that publishes the host board's SoC temperature and CPU load as HAL pins — on a Raspberry Pi or a BigTreeTech CB1 — so they can be watched in halmeter/halscope, compared against a limit with a `comp`, or wired anywhere else in HAL. Pure Python standard library plus LinuxCNC's own `hal` module — nothing to install.
 
 The optional argument is the sampling interval in seconds (default `1.0`).
 
@@ -16,7 +16,7 @@ The optional argument is the sampling interval in seconds (default `1.0`).
 
 | Pin | Type | Dir | Meaning |
 |---|---|---|---|
-| `rpi-monitor.cpu-temp` | float | OUT | SoC temperature in °C (`/sys/class/thermal/thermal_zone0/temp`) |
+| `rpi-monitor.cpu-temp` | float | OUT | SoC temperature in °C (the CPU's thermal zone, see below) |
 | `rpi-monitor.cpu-load` | float | OUT | CPU busy time across all cores, 0–100 % (delta of `/proc/stat` between samples; iowait counts as idle) |
 | `rpi-monitor.ok` | bit | OUT | TRUE while the last sample read cleanly |
 
@@ -46,15 +46,33 @@ net cpu-too-hot <= cpu-hot.out
 
 `-W` makes HAL wait until the component's pins exist before the `net` lines run.
 
+### SUPPORTED BOARDS
+
+The temperature is read from the CPU's thermal zone under `/sys/class/thermal`, picked by its `type` rather than its number:
+
+| Board | SoC | Zones | Used |
+|---|---|---|---|
+| Raspberry Pi 3 / 4 / 5 | Broadcom | `cpu-thermal` only | `cpu-thermal` |
+| BTT CB1 | Allwinner H616 | CPU, GPU, video engine, DDR (order depends on the kernel: zone 2 is the CPU on the BTT image, zone 0 the GPU) | the CPU zone |
+
+Matched types, best first: `cpu-thermal`, `cpu_thermal`, `cpu0-thermal`, `soc-thermal`, `soc_thermal`, then any type containing `cpu` (vendor kernels, e.g. `cpu_thermal_zone`). If none matches, `thermal_zone0` is used, as before. The component prints the file it reads on startup.
+
 ### TESTING OFF-PI
 
 Two environment variables point the component at other files:
 
-* `RPI_MONITOR_TEMP_FILE` — default `/sys/class/thermal/thermal_zone0/temp` (millidegrees)
+* `RPI_MONITOR_TEMP_FILE` — read this file (millidegrees) instead of looking for the CPU zone
+* `RPI_MONITOR_THERMAL_DIR` — where to look for the zones, default `/sys/class/thermal`
 * `RPI_MONITOR_STAT_FILE` — default `/proc/stat`
 
 ### LIMITS
 
-* Reports the aggregate of all four cores — a single saturated core on a Pi 4 reads as ~25 %.
+* Reports the aggregate of all cores — a single saturated core on a 4-core Pi 4 or CB1 reads as ~25 %.
 * Load is averaged over one sampling interval, so it's smooth rather than instantaneous.
-* Not wired into the web UI; the pins are for HAL-side monitoring.
+* To show the temperature in the LinuxCNC web UI's temperature plot, add a sensor to the machine config (the UI wires the pin, it does not load the component):
+
+  ```
+  [temperature_sensor host]
+  sensor_type: hal
+  sensor_pin: rpi-monitor.cpu-temp
+  ```
