@@ -139,6 +139,10 @@ Ws2812* Ws2812::create(PinName pin, int leds, int bytesPerLed, const char* who)
     t->EGR = TIM_EGR_UG;
     t->CR1 = TIM_CR1_ARPE | TIM_CR1_CEN;
 
+    // the DMAMUX runs on the DMA1 clock (RM0444 RCC_AHBENR: "DMA1EN: DMA1 and DMAMUX clock
+    // enable"): on the M8P the SPI link has it on already, on a CAN node nothing else does and the
+    // DMAMUX write below would be lost (no DMA requests, the LEDs never change)
+    __HAL_RCC_DMA1_CLK_ENABLE();
     __HAL_RCC_DMA2_CLK_ENABLE();
     s->dma->CCR = 0;
     (DMAMUX1_Channel0 + 7 + k)->CCR = request;      // DMAMUX channels 7 ... 11 are DMA2 1 ... 5
