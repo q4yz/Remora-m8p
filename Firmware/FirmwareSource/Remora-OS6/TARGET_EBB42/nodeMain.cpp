@@ -78,8 +78,12 @@ int main()
     Watchdog& watchdog = Watchdog::get_instance();
     watchdog.start(2000);
 
-    RemoraCAN can(FDCAN2, GPIOB, 0, 1, GPIO_AF3_FDCAN2, NODE_CAN_BITRATE);
-    CanNode node(&can);
+    // static: in RAM (.bss), not on the stack. Bare metal has one small stack for main() and every
+    // interrupt (and newlib's printf); with the RGB chain buffers CanNode grew past 1 KB, main()'s
+    // frame to 1.4 KB, and the node no longer started (no USB console, no CAN ACK). Function-local
+    // statics are still constructed here, after the mbed / HAL start-up, on the first pass.
+    static RemoraCAN can(FDCAN2, GPIOB, 0, 1, GPIO_AF3_FDCAN2, NODE_CAN_BITRATE);
+    static CanNode node(&can);
 
     // USB serial number = node UUID, also visible in the Windows device manager / lsusb -v
     char uuid[13];

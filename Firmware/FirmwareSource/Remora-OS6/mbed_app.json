@@ -29,7 +29,8 @@
         "EBB42": {
             "target.mbed_rom_size": "0x20000",
             "target.console-uart": false,
-            "target.c_lib": "std"
+            "target.c_lib": "std",
+            "target.boot-stack-size": "0x2000"
         },
         "MANTA8": {
             "target.mbed_app_start": "0x08002000",
