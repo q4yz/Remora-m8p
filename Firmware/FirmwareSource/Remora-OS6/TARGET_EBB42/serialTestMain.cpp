@@ -13,6 +13,12 @@
     - USB: configured by the host, the HSI48 trim of the clock recovery
     - the option bytes (FLASH OPTR): boot selection, hardware watchdog
 
+    Sign of life without USB on the hotend fan output PA0 (fan port LED):
+    3 quick flashes when main() starts, then 1 Hz blinking once USB is
+    started. No flashes: the firmware does not reach main(); flashes but
+    no blinking: it hangs starting USB; blinking but no COM port: it runs,
+    only USB fails.
+
     No output on a board where it works on another: compare the option
     bytes with dfu-util (see SERIAL_TEST.md).
 ************************************************************************/
@@ -64,10 +70,34 @@ static void printOptionBytes(void)
                                                          : "option bit nBOOT0 = 0: SYSTEM BOOTLOADER, never this firmware"));
 }
 
+// sign of life without USB: the hotend fan output PA0 (fan port LED, the fan with 24 V)
+static void pa0(bool on)
+{
+    if (on) GPIOA->BSRR = GPIO_PIN_0;
+    else GPIOA->BRR = GPIO_PIN_0;
+}
+
 int main()
 {
     uint32_t csr = RCC->CSR;
     __HAL_RCC_CLEAR_RESET_FLAGS();
+
+    // stage 1, main() reached: 3 quick flashes on PA0
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin = GPIO_PIN_0;
+    gpio.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOA, &gpio);
+    for (int i = 0; i < 3; i++)
+    {
+        pa0(true);
+        HAL_Delay(100);
+        pa0(false);
+        HAL_Delay(150);
+    }
+    HAL_Delay(500);
 
     Watchdog& watchdog = Watchdog::get_instance();
     watchdog.start(4000);
@@ -86,6 +116,7 @@ int main()
         uint32_t now = HAL_GetTick();
         if (now - last < 500) continue;
         last = now;
+        pa0((count & 1) == 0);              // stage 2, USB started: PA0 blinks at 1 Hz
 
         if (count % 10 == 0)
         {
