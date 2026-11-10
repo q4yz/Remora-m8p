@@ -54,8 +54,10 @@ Compare the two boards line by line. Telling lines:
   ```
 
   The first 4 bytes are OPTR (little endian): bit 24 nBOOT_SEL, bit 25
-  nBOOT1, bit 26 nBOOT0, bit 16 IWDG_SW. Usual for these boards:
-  nBOOT_SEL 1 (the BOOT0 pin decides). With nBOOT_SEL 0 and nBOOT0 0 the
-  chip never starts the firmware.
+  nBOOT1, bit 26 nBOOT0, bit 16 IWDG_SW. A working EBB42 (2026-11-10):
+  `OPTR 0xfefffeaa`, nBOOT_SEL 0 / nBOOT0 1 = always main flash, the BOOT0
+  pin is ignored (DFU only through the empty-flash check). With nBOOT_SEL 0
+  and nBOOT0 0 the chip never starts the firmware; with nBOOT_SEL 1 the
+  BOOT0 pin (PA14) decides, a high level on it starts the ROM bootloader.
 - nothing: no power, or the USB data lines of that board do not reach
   the MCU (cable, connector).
