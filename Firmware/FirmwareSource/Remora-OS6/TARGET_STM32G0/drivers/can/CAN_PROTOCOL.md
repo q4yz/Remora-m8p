@@ -125,7 +125,16 @@ Module types (pins as `port << 4 | number`, port 0 = A, `0xFF` none):
 ## Process data (phase 3)
 
 - COMMAND `0x200 + n`, hub → node: output bits (16-bit, node local), flags
-  (bit 0: LinuxCNC gone, outputs safe). Sent on a change and every 20 ms.
+  (bit 0: LinuxCNC gone, outputs safe), a reserved byte, the safe timeout
+  (16-bit, s). Sent on a change and every 20 ms. Nodes before the safe
+  timeout read the first 3 bytes only; a node gets 240 s until the first
+  COMMAND that carries a timeout.
+- Safe timeout: after that long in the safe state (LinuxCNC gone, or no
+  COMMAND) every node output whose safe value is on (a PWM safe duty above
+  0, a digital output safe high) goes off, as LinuxCNC's 0, until LinuxCNC
+  is back: a hotend fan does not run for ever with LinuxCNC in E-stop.
+  `"Safe Timeout"` (s) in the node entry, default the hub's top-level
+  `"Safe Timeout"`, default 240; 0 keeps the safe values.
 - STATUS `0x280 + n`, node → hub: input bits (16-bit, node local). Sent on a
   change and every 20 ms.
 - Node without COMMAND for 100 ms: outputs to their safe state, state SAFE,

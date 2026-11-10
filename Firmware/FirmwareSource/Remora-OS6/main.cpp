@@ -544,6 +544,7 @@ void configCan()
         int number = n["Node"] | 0;
         bool mandatory = strcmp(n["Mandatory"] | "True", "False") != 0;       // default: mandatory
         if (!canHub->addNode(n["UUID"] | "", number, n["Comment"] | "", mandatory)) continue;
+        canHub->setSafeTimeout(number, n["Safe Timeout"] | (doc["Safe Timeout"] | SAFE_TIMEOUT_DEFAULT_S));
 
         // the node's modules, same keys as the local modules
         JsonArray modules = n["Modules"];
@@ -670,7 +671,12 @@ void loadModules()
     // SPI communication monitoring
     servoThread->registerModule(comms);
 
-    // outputs go to their safe state while there is no SPI data from LinuxCNC
+    // outputs go to their safe state while there is no SPI data from LinuxCNC, after "Safe Timeout"
+    // seconds (default 4 min, 0: never) every output whose safe value is on goes off
+    int timeout = doc["Safe Timeout"] | SAFE_TIMEOUT_DEFAULT_S;
+    safeTimeout = timeout > 0 ? (uint32_t)timeout : 0;
+    if (safeTimeout) printf("Safe Timeout %lu s: outputs off after that long without LinuxCNC\n", (unsigned long)safeTimeout);
+    else printf("Safe Timeout 0: outputs keep their safe value without LinuxCNC\n");
     servoThread->registerModule(new CommsMonitor(comms));
 
     // MCU over temperature shutdown, always on (an "MCU Temperature" module only adds the report)

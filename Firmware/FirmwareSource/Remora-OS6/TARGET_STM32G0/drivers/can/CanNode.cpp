@@ -16,6 +16,9 @@ CanNode::CanNode(RemoraCAN* can, uint32_t baseFreq) :
     receiving(false),
     outputs(0),
     safe(true),
+    safeSince(0),
+    safeExpired(false),
+    safeTimeout(CAN_SAFE_TIMEOUT_DEFAULT_S),
     inputs(0),
     lastCommand(0),
     lastStatus(0),
@@ -394,7 +397,8 @@ void CanNode::applyConfig()
     this->moduleCount = this->pendingCount;
 
     // outputs start in their safe state until the first COMMAND, drivers disabled until the first JOINT
-    this->safe = true;
+    this->safe = false;                         // the safe timeout starts with the configuration
+    this->setSafe(true);
     this->outputs = 0;
     this->jointCount = 0;
     this->analogCount = 0;
@@ -520,7 +524,7 @@ void CanNode::applyConfig()
 void CanNode::releaseModules()
 {
     // outputs to their safe level and drivers disabled first, then all pins back to high impedance
-    this->safe = true;
+    this->setSafe(true);
     this->writeOutputs();
     this->stopJoints();
     for (int i = 0; i < CAN_NODE_JOINTS; i++) this->joints[i].active = false;
@@ -560,7 +564,8 @@ void CanNode::writePwm()
     {
         canNodePwm_t& p = this->pwm[i];
         if (!p.active) continue;
-        uint32_t duty = this->safe ? (uint32_t)p.safeDuty * (CAN_PWM_FULL / 100) : p.duty;
+        uint32_t duty = !this->safe ? p.duty
+                      : this->safeExpired ? 0 : (uint32_t)p.safeDuty * (CAN_PWM_FULL / 100);
         p.onTicks = (uint16_t)((duty * p.period + CAN_PWM_FULL / 2) / CAN_PWM_FULL);
     }
 }
@@ -648,10 +653,36 @@ void CanNode::writeOutputs()
         if (m.type != MODULE_DIGITAL_PIN || !(m.flags & DPIN_OUTPUT)) continue;
 
         bool level;
-        if (this->safe) level = (m.flags & DPIN_SAFE_HIGH) != 0;           // physical level, not inverted
+        if (this->safe && this->safeExpired) level = (m.flags & DPIN_INVERT) != 0;  // off: as LinuxCNC's 0
+        else if (this->safe) level = (m.flags & DPIN_SAFE_HIGH) != 0;      // physical level, not inverted
         else level = (((this->outputs >> m.bit) & 1) != 0) != ((m.flags & DPIN_INVERT) != 0);
         canIoWrite(m.pin, level);
     }
+}
+
+
+void CanNode::setSafe(bool safe)
+{
+    if (safe && !this->safe)
+    {
+        this->safeSince = this->now;
+        this->safeExpired = false;
+    }
+    if (!safe) this->safeExpired = false;
+    this->safe = safe;
+}
+
+
+// a hotend fan must not run for ever without LinuxCNC: after safeTimeout in the safe state every
+// output whose safe value is on goes off (as LinuxCNC's 0), until LinuxCNC is back
+void CanNode::serviceSafeTimeout()
+{
+    if (!this->safe || this->safeExpired || !this->safeTimeout) return;
+    if ((this->now - this->safeSince) < (uint32_t)this->safeTimeout * 1000u) return;
+    this->safeExpired = true;
+    this->writeOutputs();
+    printf("safe state for %u s: all outputs off\n", (unsigned)this->safeTimeout);
+    this->printOutputs("SAFE TIMEOUT");
 }
 
 
@@ -674,7 +705,8 @@ void CanNode::handleCommand(const canFrame_t& frame)
     if (this->state != NODE_STATE_RUNNING && this->state != NODE_STATE_SAFE) return;
 
     canCommand_t cmd;
-    memcpy(&cmd, frame.data, sizeof(cmd));
+    memset(&cmd, 0, sizeof(cmd));
+    memcpy(&cmd, frame.data, frame.len < sizeof(cmd) ? frame.len : sizeof(cmd));
 
     bool safe = (cmd.flags & CMD_FLAG_SAFE) != 0;
     bool changed = this->commandCount == 0 || cmd.outputs != this->outputs || safe != this->safe;
@@ -682,7 +714,8 @@ void CanNode::handleCommand(const canFrame_t& frame)
     this->lastCommand = this->now;
     this->commandCount++;
     this->outputs = cmd.outputs;
-    this->safe = safe;
+    if (frame.len >= sizeof(canCommand_t)) this->safeTimeout = cmd.safeTimeout;     // older hubs: the default
+    this->setSafe(safe);
 
     if (this->state == NODE_STATE_SAFE)
     {
@@ -938,7 +971,7 @@ void CanNode::service(uint32_t now)
         if (this->state == NODE_STATE_RUNNING && (now - this->lastCommand) > CAN_COMMAND_TIMEOUT_MS)
         {
             this->state = NODE_STATE_SAFE;
-            this->safe = true;
+            this->setSafe(true);
             this->writeOutputs();
             this->stopJoints();
             printf("no COMMAND from the hub, outputs in their safe state\n");
@@ -953,6 +986,7 @@ void CanNode::service(uint32_t now)
             printf("no JOINT from the hub, joints stopped, drivers disabled\n");
         }
 
+        this->serviceSafeTimeout();
         this->serviceTmc();
         this->serviceAnalog();
         this->serviceRgb();

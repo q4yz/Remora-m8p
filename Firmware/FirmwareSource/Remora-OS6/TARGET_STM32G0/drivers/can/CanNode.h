@@ -113,6 +113,9 @@ class CanNode
         // process data
         uint16_t    outputs;        // from the last COMMAND
         bool        safe;           // LinuxCNC gone (COMMAND flag) or hub gone (timeout)
+        uint32_t    safeSince;      // ms, safe state entered
+        bool        safeExpired;    // safeTimeout over: every output off, not its safe value
+        uint16_t    safeTimeout;    // s, from COMMAND; 0: the safe values stay
         uint16_t    inputs;         // last sent in STATUS
         uint32_t    lastCommand;
         uint32_t    lastStatus;
@@ -177,6 +180,8 @@ class CanNode
         void applyConfig(void);
         void releaseModules(void);
         void writeOutputs(void);
+        void setSafe(bool safe);    // starts the safe timeout on the way into the safe state
+        void serviceSafeTimeout(void);
         uint16_t readInputs(void);
 
     public:
@@ -208,6 +213,8 @@ class CanNode
         uint16_t getPwmOnTicks(int i) { return this->pwm[i].onTicks; }
         uint16_t getPwmPeriod(int i) { return this->pwm[i].period; }
         uint32_t getPwmFrames(void) { return this->pwmFrames; }
+        bool getSafeExpired(void) { return this->safeExpired; }
+        uint16_t getSafeTimeout(void) { return this->safeTimeout; }
         uint8_t getRgbCount(void) { return this->rgbCount; }
         uint8_t getRgbChainCount(void) { return this->rgbChainCount; }
         uint32_t getRgbColor(int i) { return this->rgbSeg[i].color; }

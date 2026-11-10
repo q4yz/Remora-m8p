@@ -78,10 +78,26 @@ bool CanHub::addNode(const char* uuidHex, int node, const char* comment, bool ma
 
     n->node = (uint8_t)node;
     n->mandatory = mandatory;
+    n->safeTimeout = CAN_SAFE_TIMEOUT_DEFAULT_S;
     strncpy(n->comment, comment ? comment : "", sizeof(n->comment) - 1);
     this->nodeCount++;
 
     printf("CAN: node %d = %s (%s), %s\n", node, uuidHex, n->comment, mandatory ? "mandatory" : "optional");
+    return true;
+}
+
+
+bool CanHub::setSafeTimeout(int node, int seconds)
+{
+    canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
+    if (!n || seconds < 0 || seconds > 0xFFFF)
+    {
+        printf("CAN: node %d: Safe Timeout %d s, 0 ... 65535\n", node, seconds);
+        return false;
+    }
+    n->safeTimeout = (uint16_t)seconds;
+    if (seconds) printf("CAN: node %d: outputs off after %d s in the safe state\n", node, seconds);
+    else printf("CAN: node %d: outputs keep their safe value\n", node);
     return true;
 }
 
@@ -996,6 +1012,8 @@ void CanHub::sendCommand(canNodeEntry_t* n, uint16_t outputs, bool safe, uint32_
         if (outputs & (1u << n->outBit[i])) cmd.outputs |= (uint16_t)(1u << i);
     }
     cmd.flags = safe ? CMD_FLAG_SAFE : 0;
+    cmd.reserved = 0;
+    cmd.safeTimeout = n->safeTimeout;
 
     // on a change, and regularly: the node goes to its safe state without COMMAND
     if (cmd.outputs == n->lastOutputs && cmd.flags == n->lastFlags && (now - n->lastCommand) < CAN_PROCESS_MS) return;

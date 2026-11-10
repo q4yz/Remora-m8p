@@ -119,7 +119,11 @@ void DigitalPin::update()
 	}
 	else												// the pin is configured as an output
 	{
-		if (commsLost)
+		if (commsLost && safeExpired)
+		{
+			pinState = this->invert;					// safe timeout over: off, as LinuxCNC's 0
+		}
+		else if (commsLost)
 		{
 			pinState = this->safeState;					// physical safe level, not affected by invert
 		}

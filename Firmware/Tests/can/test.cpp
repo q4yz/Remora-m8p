@@ -710,6 +710,53 @@ int main(int argc, char** argv) {
         simSafe = true;
         simSp[4] = simSp[5] = 0.0f;
     }
+    else if (sc == "safe-timeout" || sc == "safe-timeout-hub-lost" || sc == "safe-timeout-never") {
+        /* hotend fan PA_0 safe 100 %, an output PB_8 safe high, an inverted output PB_9 safe high:
+           after "Safe Timeout" in the safe state all off (as LinuxCNC's 0), back with LinuxCNC */
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.setSafeTimeout(1, sc == "safe-timeout-never" ? 0 : 3));
+        CHECK(!hub.setSafeTimeout(1, -1) && !hub.setSafeTimeout(1, 70000) && !hub.setSafeTimeout(2, 3));
+        CHECK(hub.addPwm(1, "PA_0", 1, 255, 10000, 100));
+        CHECK(hub.addDigitalPin(1, "PB_8", true, false, DPIN_MOD_NONE, true, false, 1));
+        CHECK(hub.addDigitalPin(1, "PB_9", true, true, DPIN_MOD_NONE, true, false, 2));
+        CHECK(a.node->getSafeTimeout() == CAN_SAFE_TIMEOUT_DEFAULT_S);                    /* before the first COMMAND */
+        simSafe = true;
+        run(hub, {&a}, now, 1500);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING);
+        CHECK(a.node->getSafeTimeout() == (sc == "safe-timeout-never" ? 0 : 3));
+        CHECK(a.node->getPwmOnTicks(0) == 400 && a.io.level[PB8] && a.io.level[PB9]);     /* safe values */
+        run(hub, {&a}, now, 1000);                                                        /* < 3 s since the configuration */
+        CHECK(!a.node->getSafeExpired() && a.node->getPwmOnTicks(0) == 400);
+        run(hub, {&a}, now, 2100);                                                        /* > 3 s */
+        if (sc == "safe-timeout-never") {
+            run(hub, {&a}, now, 10000);
+            CHECK(!a.node->getSafeExpired() && a.node->getPwmOnTicks(0) == 400 && a.io.level[PB8]);
+        } else {
+            printf("  after %u s without LinuxCNC: PWM %u ticks, PB_8 %d, PB_9 (inverted) %d\n",
+                   (unsigned)a.node->getSafeTimeout(), a.node->getPwmOnTicks(0), a.io.level[PB8], a.io.level[PB9]);
+            CHECK(a.node->getSafeExpired());
+            CHECK(a.node->getPwmOnTicks(0) == 0 && !a.io.level[PB8] && a.io.level[PB9]);  /* off; inverted off = high */
+            simSafe = false; simSp[1] = 40.0f; simOutputs = (1u << 1);                    /* LinuxCNC back */
+            run(hub, {&a}, now, 50);
+            CHECK(!a.node->getSafeExpired() && a.node->getPwmOnTicks(0) == 160 && a.io.level[PB8] && a.io.level[PB9]);
+            if (sc == "safe-timeout") {
+                simSafe = true; run(hub, {&a}, now, 2000);                                /* E-stop again */
+                CHECK(!a.node->getSafeExpired() && a.node->getPwmOnTicks(0) == 400);       /* the timer starts again */
+                run(hub, {&a}, now, 1100);
+                CHECK(a.node->getSafeExpired() && a.node->getPwmOnTicks(0) == 0);
+            } else {
+                hubRuns = false; run(hub, {&a}, now, 2000);                               /* hub gone */
+                CHECK(a.node->getState() == NODE_STATE_SAFE && !a.node->getSafeExpired() && a.node->getPwmOnTicks(0) == 400);
+                run(hub, {&a}, now, 1200);
+                CHECK(a.node->getSafeExpired() && a.node->getPwmOnTicks(0) == 0 && !a.io.level[PB8]);
+                hubRuns = true; run(hub, {&a}, now, 150);
+                CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getPwmOnTicks(0) == 160);
+            }
+        }
+        simSafe = true; simOutputs = 0; simSp[1] = 0.0f;
+    }
     else if (sc == "rgbw") {
         /* colour orders: R, G, B once each, W once, any position, any case */
         char name[5];
