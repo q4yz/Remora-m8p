@@ -32,7 +32,7 @@ jobs:
       fail-fast: false
       matrix:
         # names of the TARGETS table in Firmware/build.sh
-        target: [MANTA8, MANTA8_DEBUG, EBB42, EBB_SB2209, OCTOPUS_446, OCTOPUS_429]
+        target: [MANTA8, MANTA8_DEBUG, EBB42, EBB_SB2209, EBB_SERIAL_TEST, OCTOPUS_446, OCTOPUS_429]
     steps:
       - uses: actions/checkout@v4
 
