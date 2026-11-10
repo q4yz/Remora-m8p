@@ -21,7 +21,8 @@
 #include "mbed.h"
 #include "configuration.h"
 
-#ifdef REMORA_CAN_NODE
+// NODE_SERIAL_TEST: serialTestMain.cpp has the main() of the USB serial test firmware
+#if defined(REMORA_CAN_NODE) && !defined(NODE_SERIAL_TEST)
 
 #include "CanNode.h"
 #include "UsbCdc.h"
