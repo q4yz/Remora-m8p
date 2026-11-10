@@ -14,6 +14,7 @@ extern JsonObject module;
 
 extern volatile bool PRUreset;
 extern volatile bool commsLost;     // no SPI data from LinuxCNC, outputs in their safe state
+extern volatile bool safeExpired;   // commsLost for longer than "Safe Timeout": outputs off instead (commsMonitor.h)
 extern volatile bool mcuShutdown;   // MCU over temperature (mcuTemp): outputs safe, drivers off until reset
 
 // unions for RX and TX data

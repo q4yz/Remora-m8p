@@ -111,7 +111,8 @@ void PWM::update()
 	float SP;
 
 	// update the speed SP, or use the safe duty while LinuxCNC is disconnected
-	this->SP = commsLost ? this->safeDuty : *(this->ptrSP);
+	// (off once the safe timeout is over: a fan must not run for ever without LinuxCNC)
+	this->SP = !commsLost ? *(this->ptrSP) : (safeExpired ? 0.0f : this->safeDuty);
 
     // ensure SP is within range. LinuxCNC PID can have -ve command value
 	if (this->SP > 100) this->SP = 100;

@@ -45,6 +45,7 @@ typedef struct
     uint8_t  node;              // configured node number
     char     comment[24];
     bool     mandatory;         // missing / not configured: status bit off (LinuxCNC E-stop)
+    uint16_t safeTimeout;       // s in the safe state, then the node's outputs off (COMMAND); 0: never
     bool     alive;
     bool     reported;          // state change waiting to be printed
     uint8_t  state;             // NODE_STATE_* from the last heartbeat
@@ -201,6 +202,8 @@ class CanHub
 
         // mandatory: LinuxCNC must not run without this node (status bit)
         bool addNode(const char* uuidHex, int node, const char* comment, bool mandatory = true);
+        // "Safe Timeout" of a node (s, 0: the safe values stay), default CAN_SAFE_TIMEOUT_DEFAULT_S
+        bool setSafeTimeout(int node, int seconds);
 
         // LinuxCNC data bits used by the hub's own Digital Pin modules, call before addDigitalPin
         void reserveBits(uint16_t outputs, uint16_t inputs);

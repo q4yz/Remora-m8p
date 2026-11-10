@@ -77,7 +77,8 @@ void HardwarePWM::update()
     }
 
     // use the safe duty while LinuxCNC is disconnected
-    float pulseWidth = commsLost ? this->safeDuty : *(this->ptrPwmPulseWidth);
+    // (off once the safe timeout is over: a fan must not run for ever without LinuxCNC)
+    float pulseWidth = !commsLost ? *(this->ptrPwmPulseWidth) : (safeExpired ? 0.0f : this->safeDuty);
 
     if (pulseWidth != this->pwmPulseWidth)
     {

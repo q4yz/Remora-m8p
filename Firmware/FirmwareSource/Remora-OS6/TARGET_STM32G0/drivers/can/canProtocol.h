@@ -217,12 +217,19 @@ typedef struct
     uint8_t  detail;                        // e.g. the pin that was rejected
 } canConfigReply_t;
 
-// COMMAND payload (3 bytes)
+// COMMAND payload (6 bytes; nodes before the safe timeout read the first 3 only)
 typedef struct
 {
     uint16_t outputs;                       // node local output bits
     uint8_t  flags;                         // CMD_FLAG_*
+    uint8_t  reserved;
+    uint16_t safeTimeout;                   // s in the safe state, then every output off; 0: never
 } canCommand_t;
+
+// outputs whose safe value is on (a hotend fan at 100 %, a digital output safe high) switch off
+// after this long in the safe state (LinuxCNC or the hub gone), "Safe Timeout" in config.txt;
+// also the node's value until the first COMMAND that carries one
+#define CAN_SAFE_TIMEOUT_DEFAULT_S  240
 
 // STATUS payload (2 bytes)
 typedef struct
