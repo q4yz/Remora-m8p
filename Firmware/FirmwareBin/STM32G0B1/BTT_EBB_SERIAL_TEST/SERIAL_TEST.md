@@ -43,6 +43,15 @@ Compare the two boards line by line. Telling lines:
 
 ## No output at all on one board
 
+First check the flash itself: flash with STM32CubeProgrammer and
+"Verify programming" ticked. A failed verify means the flash holds a
+half-written program, which crashes and gets reset by the watchdog in a
+loop (`reset cause: WATCHDOG`, USB enumeration errors such as -71 on
+Linux). Do a full chip erase, then flash again. This was the case on an
+SB2209 on 2026-11-10; the EBB42 / SB2209 hardware and firmware were fine.
+That SB2209 had `OPTR 0xfedffeaa`: single bank flash (DUAL_BANK 0), the
+EBB42 dual bank; harmless for Remora, which does not write its flash.
+
 `lsusb` / device manager:
 
 - `0483:df11` (STM32 BOOTLOADER): the chip sits in the ROM bootloader,
