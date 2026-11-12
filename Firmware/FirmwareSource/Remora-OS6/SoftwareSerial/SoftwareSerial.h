@@ -32,23 +32,24 @@ class SoftwareSerial
 
     //Ticker          ticker;
     
-    unsigned char   inbuf[IN_BUF_SIZE];
-    unsigned char   qin;
+    // shared with the tick interrupt: volatile, or the main loop's wait for activeTx may be hoisted
+    volatile unsigned char inbuf[IN_BUF_SIZE];
+    volatile unsigned char qin;
     unsigned char   qout;
-    
-    int32_t  baudRate;
- 
-    bool     activeTx;
-    bool     activeRx;
-    bool     halfDuplex;
-    bool     outputPending;
 
-    int32_t  rxTickCnt;
-    int32_t  txTickCnt;
-    int32_t  txBitCnt;
-    int32_t  rxBitCnt;
-    int32_t  txBuffer;
-    int32_t  rxBuffer;
+    int32_t  baudRate;
+
+    volatile bool    activeTx;
+    volatile bool    activeRx;
+    bool             halfDuplex;
+    volatile bool    outputPending;
+
+    volatile int32_t rxTickCnt;
+    volatile int32_t txTickCnt;
+    volatile int32_t txBitCnt;
+    volatile int32_t rxBitCnt;
+    volatile int32_t txBuffer;
+    volatile int32_t rxBuffer;
 
     public:
 

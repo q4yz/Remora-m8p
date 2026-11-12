@@ -1,7 +1,7 @@
 #include "canNodeIo.h"
 
-// CAN nodes only, the hub uses the Remora modules for its own pins
-#ifdef REMORA_CAN_NODE
+// STM32G0: the CAN nodes, and the hub's TMC2209 UART (modules/tmc/tmc2209G0.cpp, the node's driver)
+#if defined(TARGET_STM32G0)
 
 #include "stm32g0xx_hal.h"
 #include "canProtocol.h"

@@ -5,8 +5,13 @@
 #define TOFF_VALUE  4 // [1... 15]
 
 /***********************************************************************
-                MODULE CONFIGURATION AND CREATION FROM JSON     
+                MODULE CONFIGURATION AND CREATION FROM JSON
 ************************************************************************/
+#if !defined(TARGET_STM32G0)
+// STM32G0 (Manta M8P): createTMC2209() / tmcService() in tmc2209G0.cpp, the CAN nodes' driver
+
+void tmcService(void) {}
+
 void createTMC2209()
 {
     printf("Make TMC2209\n");
@@ -47,6 +52,8 @@ void createTMC2209()
     commsThread->unregisterModule(tmc);
     delete tmc;
 }
+
+#endif
 
 
 /***********************************************************************

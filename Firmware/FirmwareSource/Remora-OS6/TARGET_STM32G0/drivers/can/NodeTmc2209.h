@@ -84,6 +84,7 @@ class NodeTmc2209
                    bool stealth, uint8_t stall);
         void start(void);                   // pin set up by the caller, configure now
         void stop(void);                    // the interrupt no longer uses the pin
+        bool busy(void) const;              // a transfer is running: tick() must be called
 
         void tick(void);                    // base thread interrupt
         bool service(uint32_t now);         // main loop; true: status changed

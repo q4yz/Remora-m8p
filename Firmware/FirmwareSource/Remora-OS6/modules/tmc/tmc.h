@@ -13,6 +13,7 @@
 
 void createTMC2208(void);
 void createTMC2209(void);
+void tmcService(void);          // main loop: STM32G0 hub TMC2209s (tmc2209G0.cpp), other boards nothing
 
 class TMC : public Module
 {
