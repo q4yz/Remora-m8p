@@ -184,7 +184,8 @@ void SoftwareSerial::receive()
 
 int SoftwareSerial::available()
 {
-    return (qout - qin);
+    // bytes waiting in the ring buffer (it was qout - qin: negative or wrong, the flush did nothing)
+    return (qin - qout + IN_BUF_SIZE) % IN_BUF_SIZE;
 }
 
 

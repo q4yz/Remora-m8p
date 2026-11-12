@@ -127,6 +127,13 @@ void NodeTmc2209::start()
 }
 
 
+bool NodeTmc2209::busy() const
+{
+    uint8_t state = this->uart;
+    return state == UART_TX || state == UART_RX;
+}
+
+
 void NodeTmc2209::stop()
 {
     this->active = false;

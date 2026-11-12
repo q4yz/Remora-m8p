@@ -1103,6 +1103,7 @@ int main()
 
     reportMcuTemp();
     rgbService();
+    tmcService();                           // STM32G0: the TMC2209 UART, checks and re-configures
 
 #ifdef CAN_HUB
     // remote joints: the new frequency commands go to the nodes right after each WRITE frame
