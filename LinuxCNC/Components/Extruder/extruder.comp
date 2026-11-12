@@ -1,10 +1,35 @@
-component heater "Thermal safety, watchdog, and hardware PWM cutoff";
+component extruder "Extruder thermal safety, watchdog, hardware PWM cutoff and cold-extrusion guard";
+
+description """
+Cold-extrusion guard (Klipper's min_extrude_temp): while the extruder
+joint is commanded to move (\\fBvel-cmd\\fR, extrude or retract) and
+\\fBcurrent-temp\\fR is below \\fBmin-extrude-temp\\fR, \\fBcold-extrude\\fR
+is TRUE once the move lasted \\fBmin-extrude-time\\fR (a homing jump of
+the position is a one-period velocity spike, not a move); nothing while
+\\fBhoming\\fR (\\fBjoint.N.homing\\fR) is TRUE. Net it to \\fBhalui.abort\\fR: the program or MDI move stops,
+as Klipper refuses an "extrude below minimum temp". One error message
+per stop. The motor enable is not gated, a disabled stepper would leave
+LinuxCNC's commanded position running away from the real one.
+
+.nf
+loadrt extruder names=extruder-heater_extruder
+addf extruder-heater_extruder servo-thread
+setp extruder-heater_extruder.min-extrude-temp 170
+net extruder-PV => extruder-heater_extruder.current-temp
+net heater_extruder-vel-cmd joint.3.vel-cmd => extruder-heater_extruder.vel-cmd
+net heater_extruder-homing joint.3.homing => extruder-heater_extruder.homing
+net heater_extruder-cold-extrude extruder-heater_extruder.cold-extrude => halui.abort
+.fi
+""";
 
 // --- Inputs ---
 pin in float current_temp "Live temperature from Remora";
 pin in float requested_temp "Target temperature from GUI";
 pin in float pid_pwm_in "PWM output coming from the PID component";
 pin in bit machine_enabled "True when machine is ON (not E-stopped)";
+pin in float vel_cmd "Extruder joint's commanded velocity (joint.N.vel-cmd)";
+pin in bit cold_extrude_enable = 1 "FALSE switches the cold-extrusion guard off";
+pin in bit homing "The extruder joint is homing (joint.N.homing): no guard";
 
 // --- User Parameters ---
 param rw float min_valid_temp = 5.0 "Failsafe: Tripped if sensor disconnects";
@@ -12,12 +37,15 @@ param rw float max_valid_temp = 290.0 "Failsafe: Tripped on thermal runaway";
 param rw float min_extrude_temp = 170.0 "Threshold for cold extrusion block";
 param rw float heatsink_fan_temp = 50.0 "Threshold to turn on the cold-end fan";
 param rw float watchdog_time = 20.0 "Seconds allowed without temperature rising";
+param rw float min_extrude_vel = 0.000001 "A |vel-cmd| above this is an extruder move (units/s)";
+param rw float min_extrude_time = 0.05 "Seconds an extruder move must last before cold_extrude (ignores a homing spike)";
 
 // --- Outputs ---
 pin out float safe_target_temp "Sent to PID command";
 pin out float safe_pwm_out "Sent to Remora hardware heater pin";
 pin out bit heatsink_fan "True if temp > heatsink_fan_temp";
 pin out bit temp_ready "True if temp >= min_extrude_temp (sent to extruder)";
+pin out bit cold_extrude "True while the extruder is commanded to move below min_extrude_temp: net to halui.abort";
 
 // Safety Faults (Wire these to an OR2 gate, then to E-stop)
 pin out bit fault_range "True if sensor reads < 5 or > 290";
@@ -26,9 +54,15 @@ pin out bit fault_watchdog "True if heating command is sent but temp doesn't ris
 // Internal variables for the timer
 variable double timer = 0.0;
 variable double saved_temp = 0.0;
+variable int cold_reported = 0;
+variable double moving_time = 0.0;
+
+license "GPL";
 
 function _ fp;
 ;;
+
+#include <rtapi_math.h>
 
 FUNCTION(_) {
     // 1. Hardware Failsafe / E-Stop handling
@@ -55,6 +89,29 @@ FUNCTION(_) {
 
     // 4. Extruder Ready Signal
     temp_ready = (current_temp >= min_extrude_temp);
+
+    // 4b. Cold-extrusion guard: the extruder is commanded to move while cold,
+    // for min_extrude_time without a break (homing sets the position in
+    // place: a one-period vel_cmd spike, not a move)
+    if (homing || fabs(vel_cmd) <= min_extrude_vel) {
+        moving_time = 0.0;
+    } else {
+        moving_time += fperiod;
+    }
+    if (cold_extrude_enable && moving_time >= min_extrude_time && !temp_ready) {
+        cold_extrude = 1;
+        if (!cold_reported) {
+            rtapi_print_msg(RTAPI_MSG_ERR,
+                "extruder: extrude below minimum temp (%.1f < %.1f C): stopped\n",
+                (double)current_temp, (double)min_extrude_temp);
+            cold_reported = 1;
+        }
+    } else {
+        cold_extrude = 0;
+        if (fabs(vel_cmd) <= min_extrude_vel) {
+            cold_reported = 0; // armed again once the extruder stands still
+        }
+    }
 
     // 5. Heating Watchdog (Dead-Heater Detection)
     // If we want it hot, but it's cold, start counting
