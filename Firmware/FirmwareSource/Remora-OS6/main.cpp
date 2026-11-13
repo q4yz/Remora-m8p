@@ -72,6 +72,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "resetPin.h"
 #include "rgb.h"
 #include "stepgen.h"
+#include "stepgenInterrupt.h"
 
 #if defined(TARGET_MANTA8)
 // CAN expansion boards (CAN_PROTOCOL.md), the M8P is the hub
@@ -679,6 +680,14 @@ void loadModules()
     else printf("Safe Timeout 0: outputs keep their safe value without LinuxCNC\n");
     servoThread->registerModule(new CommsMonitor(comms));
 
+    // "Step Generator": "Interrupt" puts the Stepgen modules on the event driven step generation
+    stepgenInterrupt = !strcmp(doc["Step Generator"] | "Base Thread", "Interrupt");
+    if (stepgenInterrupt && !stepgenInterruptSupported())
+    {
+        printf("Step Generator Interrupt is not supported on this board, Stepgen modules in the base thread\n");
+        stepgenInterrupt = false;
+    }
+
     // MCU over temperature shutdown, always on (an "MCU Temperature" module only adds the report)
     startMcuTempGuard();
 
@@ -867,6 +876,7 @@ void debugLinkReport(int state)
                (unsigned long)(servoThread->maxTicks / tpu), (unsigned long)(servoThread->periodTicks() / tpu),
                (unsigned long)servoThread->overruns);
     }
+    stepgenInterruptReport();
 }
 #endif
 
