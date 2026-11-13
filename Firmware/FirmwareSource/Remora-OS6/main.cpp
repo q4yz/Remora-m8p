@@ -681,13 +681,15 @@ void loadModules()
     else printf("Safe Timeout 0: outputs keep their safe value without LinuxCNC\n");
     servoThread->registerModule(new CommsMonitor(comms));
 
-    // "Step Generator": "Interrupt" puts the Stepgen modules on the event driven step generation
-    stepgenInterrupt = !strcmp(doc["Step Generator"] | "Base Thread", "Interrupt");
-    if (stepgenInterrupt && !stepgenInterruptSupported())
+    // the Stepgen modules on the event driven step generation where the board family has a step timer
+    // (default), "Step Generator": "Base Thread" keeps them on the base thread DDS
+    const char* stepGenerator = doc["Step Generator"] | "Interrupt";
+    stepgenInterrupt = strcmp(stepGenerator, "Base Thread") != 0 && stepgenInterruptSupported();
+    if (!stepgenInterrupt && doc.containsKey("Step Generator") && !strcmp(stepGenerator, "Interrupt"))
     {
         printf("Step Generator Interrupt is not supported on this board, Stepgen modules in the base thread\n");
-        stepgenInterrupt = false;
     }
+    printf("Step Generator: %s\n", stepgenInterrupt ? "Interrupt" : "Base Thread");
 
     // MCU over temperature shutdown, always on (an "MCU Temperature" module only adds the report)
     startMcuTempGuard();
