@@ -11,7 +11,7 @@
     taken (e.g. an RGB chain on PC6) they fall back to it on their own.
 
     One timer interrupt makes every joint's steps at their exact times;
-    the servo thread passes LinuxCNC's frequencies and drives the enable
+    the base thread passes LinuxCNC's frequencies and drives the enable
     pins. The base thread frequency (PRU_base_freq) is then only the
     driver's step rate limit, not the step timing.
 
