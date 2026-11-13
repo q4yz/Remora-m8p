@@ -24,6 +24,8 @@ bool stepgenInterrupt = false;
 __attribute__((weak)) bool stepTimerAvailable(void) { return false; }
 __attribute__((weak)) uint32_t stepTimerHz(void) { return 0; }
 __attribute__((weak)) bool stepTimerStart(StepScheduler*) { return false; }
+__attribute__((weak)) void stepTimerWait(uint32_t) { }
+__attribute__((weak)) uint32_t stepTimerBusyMax(void) { return 0; }
 
 
 class BoardStepPins : public StepPins
@@ -33,6 +35,7 @@ class BoardStepPins : public StepPins
         Pin* dirPin[STEPSCHED_JOINTS] = {};
         void step(uint8_t j, bool high) override { this->stepPin[j]->set(high); }
         void dir(uint8_t j, bool forward) override { this->dirPin[j]->set(forward); }
+        void wait(uint32_t ticks) override { stepTimerWait(ticks); }
 };
 
 static BoardStepPins pins;
@@ -87,8 +90,9 @@ static bool startScheduler()
     }
     sched = s;
     baseThread->registerModule(new StepgenCommand());
-    printf("Step Generator Interrupt: pulse %d ns, direction setup %d ns, up to %d steps/s per joint\n",
-           STEP_PULSE_MIN_NS, STEP_DIR_SETUP_NS, STEP_MAX_RATE);
+    printf("Step Generator Interrupt: pulse %d ns (%s), direction setup %d ns, up to %d steps/s per joint\n",
+           STEP_PULSE_MIN_NS, s->getInlinePulse() ? "one interrupt per step" : "an interrupt for each edge",
+           STEP_DIR_SETUP_NS, STEP_MAX_RATE);
     return true;
 }
 
@@ -135,6 +139,7 @@ void stepgenInterruptReport(void)
     if (!sched) return;
     uint32_t tpu = stepTimerHz() / 1000000;
     if (!tpu) return;
-    printf("[debug] stepgen: interrupt, %lu interrupts, %lu steps, latest edge %lu us late\n",
-           (unsigned long)sched->events, (unsigned long)sched->steps, (unsigned long)(sched->lateMax / tpu));
+    printf("[debug] stepgen: interrupt, %lu interrupts, %lu steps, latest edge %lu us late, longest interrupt %lu us\n",
+           (unsigned long)sched->events, (unsigned long)sched->steps, (unsigned long)(sched->lateMax / tpu),
+           (unsigned long)(stepTimerBusyMax() / tpu));
 }

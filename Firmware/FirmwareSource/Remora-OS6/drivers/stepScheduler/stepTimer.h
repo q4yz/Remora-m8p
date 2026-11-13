@@ -23,4 +23,9 @@ bool stepTimerAvailable(void);
 uint32_t stepTimerHz(void);
 bool stepTimerStart(StepScheduler* sched);      // false: the timer is used by something else
 
+// busy wait in the timer interrupt, in timer ticks: the width of a step pulse that ends in its interrupt
+void stepTimerWait(uint32_t ticks);
+// statistics: the longest timer interrupt so far, from the time it was due to its end (ticks)
+uint32_t stepTimerBusyMax(void);
+
 #endif
