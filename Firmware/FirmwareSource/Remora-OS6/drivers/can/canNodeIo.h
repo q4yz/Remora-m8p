@@ -9,6 +9,8 @@
     protocol (Firmware/Tests/can) with a simulation.
 ************************************************************************/
 
+void canIoUniqueId(uint32_t id[3]);         // the MCU's 96-bit unique ID (the node UUID comes from it)
+
 bool canIoPinExists(uint8_t pin);
 bool canIoPinReserved(uint8_t pin);         // used by the node itself: CAN, USB
 

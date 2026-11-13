@@ -1,7 +1,7 @@
 #ifndef CANNODE_H
 #define CANNODE_H
 
-#include "RemoraCAN.h"
+#include "CanBus.h"
 #include "canProtocol.h"
 #include "NodeTmc2209.h"
 
@@ -94,7 +94,7 @@ class CanNode
 {
     private:
 
-        RemoraCAN*  can;
+        CanBus*     can;
         uint8_t     uuid[6];
         uint8_t     node;           // 0: no number assigned yet
         uint8_t     state;          // NODE_STATE_*
@@ -188,7 +188,7 @@ class CanNode
 
         void printOutputs(const char* why);         // debug: output bits and the pin levels
 
-        CanNode(RemoraCAN* can, uint32_t baseFreq = CAN_NODE_BASE_FREQ);
+        CanNode(CanBus* can, uint32_t baseFreq = CAN_NODE_BASE_FREQ);
 
         void service(uint32_t now);
         void baseTick(void);                        // step pulses, from the base thread interrupt

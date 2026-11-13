@@ -27,6 +27,14 @@ static GPIO_TypeDef* portOf(uint8_t pin)
 }
 
 
+void canIoUniqueId(uint32_t id[3])
+{
+    id[0] = HAL_GetUIDw0();
+    id[1] = HAL_GetUIDw1();
+    id[2] = HAL_GetUIDw2();
+}
+
+
 bool canIoPinExists(uint8_t pin)
 {
     return portOf(pin) != nullptr && CAN_PIN_NUMBER(pin) <= 15;

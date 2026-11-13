@@ -1,7 +1,7 @@
 /***********************************************************************
     TMC2209 drivers on the STM32G0 hub (Manta M8P), "TMC2209" module
 
-    The same driver as on the CAN nodes (TARGET_STM32G0/drivers/can/
+    The same driver as on the CAN nodes (drivers/can/
     NodeTmc2209): a bit-banged single wire UART, 3 timer ticks per bit at
     40 kHz = 13333 baud, as on the EBB42 / SB2209 where it answers. The
     TMCStepper library with SoftwareSerial reached none of the M8P's

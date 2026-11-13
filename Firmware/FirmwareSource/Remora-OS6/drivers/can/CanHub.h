@@ -1,7 +1,7 @@
 #ifndef CANHUB_H
 #define CANHUB_H
 
-#include "RemoraCAN.h"
+#include "CanBus.h"
 #include "canProtocol.h"
 
 /***********************************************************************
@@ -155,7 +155,7 @@ class CanHub
 {
     private:
 
-        RemoraCAN*      can;
+        CanBus*         can;
         canNodeEntry_t  nodes[CAN_NODE_MAX];
         int             nodeCount;
         uint32_t        lastIdentify;
@@ -198,7 +198,7 @@ class CanHub
 
     public:
 
-        CanHub(RemoraCAN* can);
+        CanHub(CanBus* can);
 
         // mandatory: LinuxCNC must not run without this node (status bit)
         bool addNode(const char* uuidHex, int node, const char* comment, bool mandatory = true);

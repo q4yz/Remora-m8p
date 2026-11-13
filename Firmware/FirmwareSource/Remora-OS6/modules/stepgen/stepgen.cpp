@@ -1,4 +1,5 @@
 #include "stepgen.h"
+#include "stepgenInterrupt.h"
 
 
 /***********************************************************************
@@ -14,6 +15,9 @@ void createStepgen()
     const char* enable = module["Enable Pin"];
     const char* step = module["Step Pin"];
     const char* dir = module["Direction Pin"];
+
+    // "Step Generator": "Interrupt": the event driven step generation, else (or if it cannot start) the base thread
+    if (stepgenInterrupt && createStepgenInterrupt(joint, step, dir, enable)) return;
 
     // configure pointers to data source and feedback location
     ptrJointFreqCmd[joint] = &rxData.jointFreqCmd[joint];

@@ -24,6 +24,8 @@ jobs:
         run: sh Firmware/Tests/can/run.sh
       - name: SPI link
         run: sh Firmware/Tests/link/run.sh
+      - name: Step scheduler
+        run: sh Firmware/Tests/stepsched/run.sh
 
   firmware:
     name: ${{ matrix.target }}
