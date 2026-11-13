@@ -1,14 +1,21 @@
 #include "canNodeIo.h"
 #include "configuration.h"                  // board.h: BOARD_NODE_RESERVED_PINS
 
-// STM32G0: the CAN nodes, and the hub's TMC2209 UART (modules/tmc/tmc2209Uart.cpp, the node's driver)
+// Every STM32 family (REMORA_HAS_NODE_IO): GPIO by pin byte for the CAN nodes and the hub's TMC2209
+// UART (modules/tmc/tmc2209Uart.cpp, the node's driver). The pin byte is the mbed PinName
+// (port << 4 | number), GPIO through the family's HAL, the ADC through mbed, LED chains through the
+// family's LedChain (if it has one).
 
-#include "stm32g0xx_hal.h"
+#include "mbed.h"
 #include "canProtocol.h"
 #include "hal/analogin_api.h"
 #include "hal/pinmap.h"
 #include "PeripheralPins.h"
-#include "drivers/ws2812/Ws2812.h"
+#ifdef REMORA_HAS_LED_CHAIN
+#include "drivers/rgb/ledChain.h"
+#endif
+
+#ifdef REMORA_HAS_NODE_IO
 
 static GPIO_TypeDef* portOf(uint8_t pin)
 {
@@ -21,7 +28,15 @@ static GPIO_TypeDef* portOf(uint8_t pin)
 #ifdef GPIOE
         case 4: return GPIOE;
 #endif
+#ifdef GPIOF
         case 5: return GPIOF;
+#endif
+#ifdef GPIOG
+        case 6: return GPIOG;
+#endif
+#ifdef GPIOH
+        case 7: return GPIOH;
+#endif
     }
     return nullptr;
 }
@@ -66,7 +81,15 @@ static void clockOn(GPIO_TypeDef* port)
 #ifdef GPIOE
     else if (port == GPIOE) __HAL_RCC_GPIOE_CLK_ENABLE();
 #endif
+#ifdef GPIOF
     else if (port == GPIOF) __HAL_RCC_GPIOF_CLK_ENABLE();
+#endif
+#ifdef GPIOG
+    else if (port == GPIOG) __HAL_RCC_GPIOG_CLK_ENABLE();
+#endif
+#ifdef GPIOH
+    else if (port == GPIOH) __HAL_RCC_GPIOH_CLK_ENABLE();
+#endif
 }
 
 
@@ -162,8 +185,9 @@ uint16_t canIoAnalogRead(uint8_t pin)
 
 
 // WS2812 LED chains: CAN pin byte = mbed PinName (port << 4 | number) on the STM32
+#ifdef REMORA_HAS_LED_CHAIN
 #define RGB_CHAINS  CAN_NODE_RGB_CHAINS
-static Ws2812* rgbStrip[RGB_CHAINS];
+static LedChain* rgbStrip[RGB_CHAINS];
 static uint8_t rgbPin[RGB_CHAINS];
 
 static int rgbSlot(uint8_t pin)
@@ -175,7 +199,7 @@ static int rgbSlot(uint8_t pin)
 
 bool canIoRgbCapable(uint8_t pin)
 {
-    return canIoPinExists(pin) && Ws2812::capable((PinName)pin);
+    return canIoPinExists(pin) && ledChainCapable((PinName)pin);
 }
 
 
@@ -186,7 +210,7 @@ bool canIoRgbConfigure(uint8_t pin, int leds, int bytesPerLed)
     while (i < RGB_CHAINS && rgbStrip[i]) i++;
     if (i == RGB_CHAINS) return false;
     clockOn(portOf(pin));
-    rgbStrip[i] = Ws2812::create((PinName)pin, leds, bytesPerLed, "RGB");
+    rgbStrip[i] = ledChainCreate((PinName)pin, leds, bytesPerLed, "RGB");
     rgbPin[i] = pin;
     return rgbStrip[i] != nullptr;
 }
@@ -207,3 +231,12 @@ void canIoRgbRelease(uint8_t pin)
     delete rgbStrip[i];
     rgbStrip[i] = nullptr;
 }
+#else
+// no LED chain driver in this family
+bool canIoRgbCapable(uint8_t) { return false; }
+bool canIoRgbConfigure(uint8_t, int, int) { return false; }
+bool canIoRgbSend(uint8_t, const uint8_t*) { return false; }
+void canIoRgbRelease(uint8_t) {}
+#endif
+
+#endif

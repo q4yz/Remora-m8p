@@ -10,7 +10,11 @@ pruThread::pruThread(TIM_TypeDef* timer, IRQn_Type irq, uint32_t frequency) :
 	timer(timer),
 	irq(irq),
 	frequency(frequency),
-	hasThreadPost(false)
+	hasThreadPost(false),
+	maxTicks(0),
+	overruns(0),
+	sumTicks(0),
+	runs(0)
 {
 	// enable the DWT cycle counter, used to time the minimum step pulse width
 	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
@@ -49,8 +53,22 @@ void pruThread::unregisterModule(Module* module)
     vThread.erase(iter, vThread.end());
 }
 
+uint32_t pruThread::takeAverage(void)
+{
+	__disable_irq();
+	uint64_t sum = this->sumTicks;
+	uint32_t n = this->runs;
+	this->sumTicks = 0;
+	this->runs = 0;
+	__enable_irq();
+	return n ? (uint32_t)(sum / n) : 0;
+}
+
+
 void pruThread::run(void)
 {
+	uint32_t begin = DWT->CYCCNT;
+
 	// iterate over the Thread pointer vector to run all instances of Module::runModule()
 	for (iter = vThread.begin(); iter != vThread.end(); ++iter) (*iter)->runModule();
 
@@ -63,4 +81,11 @@ void pruThread::run(void)
 
 		for (iter = vThreadPost.begin(); iter != vThreadPost.end(); ++iter) (*iter)->runModulePost();
 	}
+
+	// the update interrupt flag was cleared on entry: set again means this run took a whole period or more
+	uint32_t ticks = DWT->CYCCNT - begin;
+	this->runs++;
+	this->sumTicks += ticks;
+	if (this->timer->SR & TIM_SR_UIF) this->overruns++;
+	if (ticks > this->maxTicks) this->maxTicks = ticks;
 }

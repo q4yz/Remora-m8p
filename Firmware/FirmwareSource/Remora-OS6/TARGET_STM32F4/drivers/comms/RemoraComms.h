@@ -8,8 +8,24 @@
 #include "stm32f4xx_hal.h"
 
 #include "modules/module.h"
+#include "drivers/remoraLink/RemoraLink.h"
 
-class RemoraComms : public Module
+/***********************************************************************
+    SPI slave link to the host for STM32F4 boards: the hardware side.
+
+    The frame handling (commands to rxData in the NSS interrupt, queue to
+    the main loop, torn frames, re-align, link status, statistics) is
+    RemoraLink, shared by every MCU family; this class is the SPI / DMA /
+    NSS pin part of it (LinkHardware) and the servo thread module that
+    updates the link status.
+
+    SPI1 (PA5 SCK, PA6 MISO, PA7 MOSI, DMA2 streams 0 / 3) or SPI2 (PB13,
+    PB14, PB15, DMA1 streams 3 / 4). The slave select is the SPI's NSS pin
+    (PA4 / PB12, hardware NSS) or, on boards that share the SPI with the
+    SD card, another pin (software NSS, the SPI always selected).
+************************************************************************/
+
+class RemoraComms : public Module, public LinkHardware, public RemoraLink
 {
     private:
 
@@ -17,69 +33,42 @@ class RemoraComms : public Module
         SPI_HandleTypeDef   spiHandle;
         DMA_HandleTypeDef   hdma_spi_tx;
         DMA_HandleTypeDef   hdma_spi_rx;
-        DMA_HandleTypeDef   hdma_memtomem_dma2_stream1;
-        HAL_StatusTypeDef   status;
 
-        uint32_t            transferCompleteFlag;
-
-        volatile rxData_t*  ptrRxData;
         volatile txData_t*  ptrTxData;
-        rxData_t            spiRxBuffer;
+        rxData_t            spiRxBuffer;        // DMA target, rewritten by every transfer
 
-        uint8_t		        noDataCount;
-        uint8_t             rejectCnt;
-        uint8_t             dataCnt;
+        bool                uploadMode;         // SD upload in progress
+        bool                initialised;        // init() ran once, re-inits (re-align) are silent
+        bool                sharedSPI;          // software NSS: the slave select is not the SPI's NSS pin
 
-        uint8_t             DMArxCnt;
-        uint32_t            ticksStart;
-        uint32_t            ticks;
-
-        bool                NSS;
-        bool                resetSPI;
-
-        bool                data;
-        bool                CommsStatus;
-
-        bool                SPIdata;
-        bool                SPIdataError;
-
-        rxData_t            uploadRxBuffer;     // copy of the last SD upload frame
-        bool                uploadFrame;        // a new SD upload frame is waiting in uploadRxBuffer
-        bool                uploadMode;         // SD upload in progress, re-align the DMA on framing errors
-        
         PinName             interruptPin;
         InterruptIn         slaveSelect;
-        bool                sharedSPI;
-        
+
         void NSSinterrupt(void);
+        void startTransfer(void);
+        void spiReset(void);
+        static void streamOff(DMA_HandleTypeDef* h);
 
     public:
 
         RemoraComms(volatile rxData_t*, volatile txData_t*, SPI_TypeDef*, PinName);
 
-        virtual void update(void);
+        virtual void update(void);      // servo thread
 
         void init(void);
         void start(void);
-        void SPItasks(void);
-        bool getStatus(void);
-        void setStatus(bool);
-        bool getError(void);
-        void setError(bool);
+        void SPItasks(void) { this->tasks(); }
+        void setUploadMode(bool mode) { this->uploadMode = mode; }
+        void stopDMA(void) { this->stopLink(); }
+        void restartDMA(void) { this->restartLink(); }
 
-        bool getUploadFrame(uint8_t*);
-        void setUploadMode(bool);
-        void stopDMA(void);
-        void restartDMA(void);
-
-        // link statistics, printed by main() while the link is down (REMORA_DEBUG)
-        volatile uint32_t   dbgFrames;          // NSS rising edges handled
-        volatile uint32_t   dbgReads;           // good PRU_READ frames
-        volatile uint32_t   dbgWrites;          // good PRU_WRITE frames
-        volatile uint32_t   dbgRejects;         // frames with an unknown header
-        volatile uint32_t   dbgTimeouts;        // DMA did not complete a frame in time
-        volatile int32_t    dbgLastBad;         // header of the last rejected frame
-
+        // LinkHardware
+        virtual uint32_t dmaRemaining(void);
+        virtual bool nssHigh(void);
+        virtual void rearm(void);
+        virtual void restart(void);
+        virtual void stop(void);
+        virtual uint32_t millis(void);
 };
 
 #endif
