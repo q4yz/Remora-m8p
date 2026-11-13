@@ -1,5 +1,6 @@
 #include "CanHub.h"
 #include "CanNode.h"
+#include "RemoraCAN.h"                  /* the simulated bus (stubs/) */
 #include "canNodeIoSim.h"
 #include <string>
 #include <cmath>

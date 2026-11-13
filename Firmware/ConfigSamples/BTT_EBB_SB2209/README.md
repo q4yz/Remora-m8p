@@ -6,7 +6,7 @@ like the EBB42: same MCU, crystal, CAN and USB pins, same node firmware (target
 message). Everything in `../BTT_EBB42/README.md` (debug output over USB, wiring,
 hub configuration, E-stop when the node is missing) applies unchanged; this
 file lists what is different: the pins. Protocol:
-`FirmwareSource/Remora-OS6/TARGET_STM32G0/drivers/can/CAN_PROTOCOL.md`.
+`FirmwareSource/Remora-OS6/drivers/can/CAN_PROTOCOL.md`.
 
 Supported on the node: Digital Pin (inputs and outputs), Stepgen (a LinuxCNC
 joint, e.g. the extruder motor), TMC2209 (the onboard driver over its UART),

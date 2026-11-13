@@ -2,6 +2,7 @@
 #include "NodeTmc2209.h"
 #include "drivers/rgb/rgbColor.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <math.h>
 
@@ -31,7 +32,7 @@ static void printUuid(const uint8_t uuid[6])
 }
 
 
-CanHub::CanHub(RemoraCAN* can) :
+CanHub::CanHub(CanBus* can) :
     can(can),
     nodeCount(0),
     lastIdentify(0),

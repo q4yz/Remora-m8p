@@ -5,6 +5,9 @@
 
 SimIo* simIo = nullptr;
 
+extern uint32_t sim_uid[3];
+void canIoUniqueId(uint32_t id[3]) { id[0] = sim_uid[0]; id[1] = sim_uid[1]; id[2] = sim_uid[2]; }
+
 bool canIoPinExists(uint8_t pin) { return CAN_PIN_PORT(pin) <= 5; }
 bool canIoPinReserved(uint8_t pin) { return pin == CAN_PIN(1, 0) || pin == CAN_PIN(1, 1) || pin == CAN_PIN(0, 11) || pin == CAN_PIN(0, 12); }
 

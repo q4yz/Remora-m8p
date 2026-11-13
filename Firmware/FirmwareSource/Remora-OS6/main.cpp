@@ -78,6 +78,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 // CAN expansion boards (CAN_PROTOCOL.md), the M8P is the hub
 #define CAN_HUB
 #include "CanHub.h"
+#include "RemoraCAN.h"                     // the STM32G0 FDCAN implementation of CanBus
 #endif
 #include "switch.h"
 #include "temperature.h"

@@ -13,8 +13,9 @@
     pins. The base thread frequency (PRU_base_freq) is then only the
     driver's step rate limit, not the step timing.
 
-    Board families: the timer is the family's (STM32G0: TIM3), see
-    stepgenInterrupt.cpp; elsewhere createStepgen() keeps the base thread.
+    Board families: the timer is the family's (drivers/stepScheduler/
+    stepTimer.h, STM32G0: TARGET_STM32G0/drivers/stepTimer, TIM3); a family
+    without one keeps the Stepgen modules in the base thread.
 ************************************************************************/
 
 #include <cstdint>

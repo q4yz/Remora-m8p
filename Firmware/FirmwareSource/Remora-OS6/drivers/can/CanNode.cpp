@@ -1,9 +1,10 @@
 #include "CanNode.h"
 #include "canNodeIo.h"
 
+#include <stdio.h>
 #include <string.h>
 
-CanNode::CanNode(RemoraCAN* can, uint32_t baseFreq) :
+CanNode::CanNode(CanBus* can, uint32_t baseFreq) :
     can(can),
     node(0),
     state(NODE_STATE_UNASSIGNED),
@@ -48,7 +49,8 @@ CanNode::CanNode(RemoraCAN* can, uint32_t baseFreq) :
     this->frequencyScale = ((int64_t)1 << (NODE_STEPBIT + 32)) / baseFreq;
 
     // 96-bit factory unique ID of the STM32 -> 48-bit UUID
-    uint32_t w[3] = { HAL_GetUIDw0(), HAL_GetUIDw1(), HAL_GetUIDw2() };
+    uint32_t w[3];
+    canIoUniqueId(w);
     uint8_t uid[12];
     memcpy(uid, w, sizeof(uid));
     canUuidFromUid(uid, this->uuid);

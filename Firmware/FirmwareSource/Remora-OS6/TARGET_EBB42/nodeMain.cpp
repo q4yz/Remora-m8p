@@ -25,6 +25,7 @@
 #if defined(REMORA_CAN_NODE) && !defined(NODE_SERIAL_TEST)
 
 #include "CanNode.h"
+#include "RemoraCAN.h"                     // the STM32G0 FDCAN implementation of CanBus
 #include "UsbCdc.h"
 
 #ifndef REMORA_NODE_BOARD

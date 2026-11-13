@@ -2,12 +2,12 @@
 # PC test of the CAN hub / node protocol logic (CanHub.cpp, CanNode.cpp) on a simulated bus.
 # Linux / WSL with g++:  sh Firmware/Tests/can/run.sh
 cd "$(dirname "$0")"
-D=../../FirmwareSource/Remora-OS6/TARGET_STM32G0/drivers/can
+S=../../FirmwareSource/Remora-OS6
+D=$S/drivers/can
 B=$(mktemp -d)
-# the sources include "RemoraCAN.h" from their own folder, build copies next to the simulated bus
-cp $D/CanHub.* $D/CanNode.* $D/NodeTmc2209.* $D/canProtocol.h $D/canNodeIo.h stubs/RemoraCAN.h stubs/canNodeIoSim.* "$B"/
-g++ -std=c++14 -O1 -g -Wall -Wextra -Istubs -I"$B" -I../../FirmwareSource/Remora-OS6 -include vector test.cpp "$B"/CanHub.cpp "$B"/CanNode.cpp \
-    "$B"/NodeTmc2209.cpp "$B"/canNodeIoSim.cpp -o "$B"/test || exit 1
+# the logic only knows CanBus (drivers/can/CanBus.h): the simulated bus and pins are in stubs/
+g++ -std=c++14 -O1 -g -Wall -Wextra -Istubs -I$D -I$S -include vector test.cpp $D/CanHub.cpp $D/CanNode.cpp \
+    $D/NodeTmc2209.cpp stubs/canNodeIoSim.cpp -o "$B"/test || { rm -rf "$B"; exit 1; }
 r=0
 for s in uuid assign two-nodes unknown lost node-reboot bad-config \
          pins config-io hub-lost node-reboot-config rejected bit-conflict lossy \

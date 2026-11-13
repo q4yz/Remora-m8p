@@ -1,7 +1,7 @@
 # BTT EBB42 CAN V1.1 / V1.2 as a Remora CAN node
 
 Expansion board for the Manta M8P hub, see
-`FirmwareSource/Remora-OS6/TARGET_STM32G0/drivers/can/CAN_PROTOCOL.md`.
+`FirmwareSource/Remora-OS6/drivers/can/CAN_PROTOCOL.md`.
 The BTT EBB SB2209 CAN runs the same firmware, its pins:
 `../BTT_EBB_SB2209/README.md`.
 
