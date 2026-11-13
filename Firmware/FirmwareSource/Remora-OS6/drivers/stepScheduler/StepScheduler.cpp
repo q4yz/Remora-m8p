@@ -80,12 +80,32 @@ void StepScheduler::apply(uint8_t j)
     }
     if (J.high) return;                     // the pulse ends first, then last + interval
 
-    // running: one new interval after the last step; from a stop: half an interval (the mean phase)
-    uint32_t next = wasRunning ? J.last + interval : this->now + interval / 2;
-    if ((int32_t)(next - this->now) < 0) next = this->now;
-    if ((int32_t)(next - J.notBefore) < 0) next = J.notBefore;
+    // running: one new interval after the last step; from a stop: half an interval (the mean phase).
+    // A legal "last + interval" is at most an interval (plus the slack of an early edge) ahead of now.
+    // Anything else is in the past, or J.last is so old that the 32 bit time wrapped (2^31 ticks,
+    // 33.5 s at 64 MHz: a joint standing still that long and then started with a slow command first,
+    // as LinuxCNC's homing does, waited up to 33 s, no steps and a following error): then now.
+    uint32_t next;
+    if (wasRunning)
+    {
+        next = J.last + interval;
+        if ((uint32_t)(next - this->now) > interval + STEPSCHED_SLACK_TICKS) next = this->now;
+    }
+    else
+    {
+        next = this->now + interval / 2;
+    }
+    if (this->dirWaiting(J) && (int32_t)(next - J.notBefore) < 0) next = J.notBefore;
     J.next = next;
     J.active = true;
+}
+
+
+// the direction setup of a joint is still running: notBefore lies at most dirSetupTicks ahead.
+// An old notBefore (a direction change long ago) is no limit, however the 32 bit time has wrapped.
+bool StepScheduler::dirWaiting(const Joint& J) const
+{
+    return (uint32_t)(J.notBefore - this->now) <= this->dirSetupTicks;
 }
 
 
@@ -106,7 +126,7 @@ void StepScheduler::edge(uint8_t j)
         uint32_t next = J.last + J.interval;
         uint32_t lowEnd = this->now + this->pulseTicks;         // low at least a pulse long
         if ((int32_t)(next - lowEnd) < 0) next = lowEnd;
-        if ((int32_t)(next - J.notBefore) < 0) next = J.notBefore;
+        if (this->dirWaiting(J) && (int32_t)(next - J.notBefore) < 0) next = J.notBefore;
         J.next = next;
         return;
     }

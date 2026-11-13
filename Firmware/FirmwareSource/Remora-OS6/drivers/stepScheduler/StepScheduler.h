@@ -77,6 +77,7 @@ class StepScheduler
 
         void apply(uint8_t j);
         void edge(uint8_t j);
+        bool dirWaiting(const Joint& J) const;
 
     public:
 

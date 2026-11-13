@@ -226,12 +226,37 @@ static void idle()
     CHECK(r.pins.stepLog[0].size() == 1);                              // only addJoint's low
 }
 
+// a joint standing still longer than 2^31 ticks (33.5 s at 64 MHz), then started with a slow command
+// first, as LinuxCNC's homing does: the old last step / direction change must not hold it back
+// (it waited up to 33 s: no steps, a following error)
+static void standstill()
+{
+    for (int reverse = 0; reverse < 2; reverse++)
+    {
+        for (double idleS : {10.0, 40.0, 60.0})
+        {
+            Rig r;
+            r.s.addJoint(0, &r.fb[0]);
+            r.run(200000, [](StepScheduler& s, uint64_t) { s.command(0, 1000, true); });     // 0.2 s forward
+            r.run((uint64_t)(idleS * 1e6), [](StepScheduler& s, uint64_t) { s.command(0, 0, true); });
+            int32_t sign = reverse ? -1 : 1;
+            int32_t before = r.s.getCount(0);
+            r.run(7000, [&](StepScheduler& s, uint64_t) { s.command(0, sign * 70, true); });
+            r.run(300000, [&](StepScheduler& s, uint64_t) { s.command(0, sign * 1000, true); });
+            int32_t moved = (r.s.getCount(0) - before) * sign;
+            printf("  standing %.0f s, then %s: %d steps (about 300)\n", idleS, reverse ? "reverse" : "forward", moved);
+            CHECK(moved >= 295 && moved <= 305);
+        }
+    }
+}
+
+
 int main(int argc, char** argv)
 {
     struct { const char* name; void (*fn)(); } tests[] = {
         {"constant", constantRate}, {"high-rate", highRate}, {"ramp", ramp}, {"reverse", reverse},
         {"stop", stopAndDisable}, {"three-joints", threeJoints}, {"max-rate", maxRate},
-        {"late", lateInterrupt}, {"idle", idle},
+        {"late", lateInterrupt}, {"idle", idle}, {"standstill", standstill},
     };
     for (auto& t : tests)
     {
