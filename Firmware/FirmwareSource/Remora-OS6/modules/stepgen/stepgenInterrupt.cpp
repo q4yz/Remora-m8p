@@ -41,9 +41,19 @@ static Pin* enablePin[STEPSCHED_JOINTS];
 static uint8_t jointMask = 0;
 
 
-// servo thread: LinuxCNC's frequencies and enables to the scheduler, the enable pins (active low)
-class StepgenServo : public Module
+// base thread: LinuxCNC's frequencies and enables to the scheduler, the enable pins (active low).
+// Not the servo thread: the link copies each SPI frame to rxData in the main loop, and the servo
+// thread runs unsynchronised to LinuxCNC's period, so it would miss a frame now and then and use
+// the one before for two periods (each time freq x 1 ms of steps wrong: a following error).
+// The base thread takes every frame within a base period, like the base thread DDS did; it only
+// compares, the division in command() runs when a frequency changed (once per servo period).
+class StepgenCommand : public Module
 {
+    private:
+        int32_t freq[STEPSCHED_JOINTS] = {};
+        bool    on[STEPSCHED_JOINTS] = {};
+        bool    first = true;
+
     public:
         void update(void) override
         {
@@ -51,10 +61,15 @@ class StepgenServo : public Module
             for (uint8_t j = 0; j < STEPSCHED_JOINTS; j++)
             {
                 if (!(jointMask & (1u << j))) continue;
-                bool on = !mcuShutdown && (enable & (1u << j));
-                enablePin[j]->set(!on);
-                sched->command(j, on ? rxData.jointFreqCmd[j] : 0, on);
+                bool o = !mcuShutdown && (enable & (1u << j));
+                int32_t f = o ? rxData.jointFreqCmd[j] : 0;
+                if (!this->first && o == this->on[j] && f == this->freq[j]) continue;
+                this->on[j] = o;
+                this->freq[j] = f;
+                enablePin[j]->set(!o);
+                sched->command(j, f, o);
             }
+            this->first = false;
         }
 };
 
@@ -71,7 +86,7 @@ static bool startScheduler()
         return false;
     }
     sched = s;
-    servoThread->registerModule(new StepgenServo());
+    baseThread->registerModule(new StepgenCommand());
     printf("Step Generator Interrupt: pulse %d ns, direction setup %d ns, up to %d steps/s per joint\n",
            STEP_PULSE_MIN_NS, STEP_DIR_SETUP_NS, STEP_MAX_RATE);
     return true;

@@ -22,7 +22,7 @@
 
     Split like the SPI link: this is the logic (Firmware/Tests/stepsched
     runs it on a PC), StepPins and the timer are the board family's.
-    The servo thread calls command() (a division per joint, the M0+ has
+    The base thread calls command() when a frequency changed (a division, the M0+ has
     no divide instruction), the timer interrupt only compares and adds.
 ************************************************************************/
 
@@ -59,7 +59,7 @@ class StepScheduler
             int32_t           count;        // step position
             volatile int32_t* feedback;     // where the count goes, at every step
 
-            // from the servo thread, taken by the interrupt when seq changes
+            // from command(), taken by the interrupt when seq changes
             volatile uint32_t pInterval;
             volatile bool     pForward;
             volatile uint8_t  pSeq;
@@ -85,7 +85,7 @@ class StepScheduler
 
         bool addJoint(uint8_t j, volatile int32_t* feedback);
 
-        // servo thread: the joint's frequency (steps / s, signed); 0 or !enabled stops it
+        // base thread, on a change: the joint's frequency (steps / s, signed); 0 or !enabled stops it
         void command(uint8_t j, int32_t frequency, bool enabled);
 
         // timer interrupt: elapsed = the ticks programmed last time (the time since the last call);
