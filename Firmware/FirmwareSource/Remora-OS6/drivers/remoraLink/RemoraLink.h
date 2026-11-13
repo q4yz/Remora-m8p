@@ -5,11 +5,13 @@
     Remora SPI link logic, independent of the MCU
 
     The frame handling every SPI slave driver needs, apart from the
-    registers: the NSS interrupt hands each finished 64 byte frame to a
-    small queue, the main loop takes them from there, checks the header
-    and moves WRITE data to rxData. Frames whose NSS edge did not land on
-    a DMA frame boundary ("torn") are dropped, and when the frames stay
-    torn or keep a bad header the link is re-aligned. While the bus is
+    registers: the NSS interrupt takes each finished 64 byte frame,
+    moves WRITE data to rxData at once (the commands never wait for the
+    main loop) and hands the frame to a small queue; the main loop takes
+    it from there for the statistics, bad headers and the SD upload.
+    Frames whose NSS edge did not land on a DMA frame boundary ("torn")
+    are dropped, and when the frames stay torn or keep a bad header the
+    link is re-aligned. While the bus is
     quiet the SPI is re-armed, so the next frame starts at byte 0 in
     both directions.
 
@@ -59,6 +61,7 @@ class RemoraLink
 
         // frames copied in the NSS interrupt, taken by tasks(): with two frames per servo period
         // (READ and WRITE back to back) a single slot lost the READ when the main loop was slow
+        rxData_t            isrFrame;           // the frame being taken, the interrupt's
         rxData_t            frameQueue[FRAME_QUEUE];
         volatile bool       frameTorn[FRAME_QUEUE];
         volatile uint8_t    qHead;              // next slot the interrupt fills
@@ -104,7 +107,7 @@ class RemoraLink
         volatile uint32_t   dbgTimeouts;        // re-aligns after torn frames
         volatile int32_t    dbgLastBad;         // header of the last rejected frame
         volatile uint32_t   dbgRearms;          // re-arms after a quiet bus
-        volatile uint32_t   dbgLost;            // frames dropped because the queue was full
+        volatile uint32_t   dbgLost;            // frames the main loop did not see: the queue was full (their data was used)
         volatile uint32_t   dbgLate;            // frame ends where the next frame had already started (no re-arm)
         volatile uint32_t   dbgTorn;            // frames dropped: NSS edge off the frame boundary or
                                                 // the next frame already started during the copy

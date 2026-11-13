@@ -17,6 +17,12 @@
       interval after the last one
     - the step pulse is always pulseTicks high and at least as long low,
       after a direction change the next step waits dirSetupTicks
+    - a short pulse (up to STEPSCHED_INLINE_PULSE_NS, the usual 1 - 3 us
+      of a TMC driver) ends in the interrupt that started it: one
+      interrupt per step. Coming back for the end cost a second interrupt
+      a few us later, as long as the first one, and at 2 x 15 kHz those
+      four interrupts per step period left the M0+ too little for the
+      threads. A longer pulse still ends with an interrupt of its own
     - a late interrupt loses no step: the rate is kept on the scheduled
       times, missed steps follow as fast as the pulse allows
 
@@ -31,6 +37,7 @@
 #define STEPSCHED_JOINTS        8
 #define STEPSCHED_IDLE_US       100     // longest timer period: new commands are taken within this
 #define STEPSCHED_SLACK_TICKS   32      // edges due this close are made in the same interrupt (0.5 us)
+#define STEPSCHED_INLINE_PULSE_NS 5000  // pulses up to this end in the interrupt that started them
 
 
 // the joint's step / direction outputs, the board family's
@@ -39,6 +46,8 @@ class StepPins
     public:
         virtual void step(uint8_t joint, bool high) = 0;
         virtual void dir(uint8_t joint, bool forward) = 0;
+        // busy wait, in ticks of the step timer: the width of a pulse that ends in its interrupt
+        virtual void wait(uint32_t ticks) = 0;
 };
 
 
@@ -68,6 +77,9 @@ class StepScheduler
 
         StepPins&   pins;
         Joint       joint[STEPSCHED_JOINTS];
+        Joint*      used[STEPSCHED_JOINTS]; // the joints in use, the interrupt looks at these only
+        volatile uint8_t nUsed;
+        bool        inlinePulse;            // the pulse ends in the interrupt that started it
         uint32_t    timerHz;
         uint32_t    pulseTicks;
         uint32_t    dirSetupTicks;
@@ -75,8 +87,10 @@ class StepScheduler
         uint32_t    idleTicks;
         uint32_t    now;                    // ticks, wraps (differences only)
 
-        void apply(uint8_t j);
-        void edge(uint8_t j);
+        uint8_t index(const Joint& J) const { return (uint8_t)(&J - this->joint); }
+        void apply(Joint& J);
+        void rise(Joint& J);
+        void edge(Joint& J);
         bool dirWaiting(const Joint& J) const;
 
     public:
@@ -96,6 +110,7 @@ class StepScheduler
         int32_t getCount(uint8_t j) const { return this->joint[j].count; }
         uint32_t getMinInterval(void) const { return this->minInterval; }
         uint32_t getIdleTicks(void) const { return this->idleTicks; }
+        bool getInlinePulse(void) const { return this->inlinePulse; }
 
         // statistics (debug)
         volatile uint32_t   events;         // onTimer() calls

@@ -69,6 +69,18 @@ static const PinMap* findChannel(PinName pin, bool freeOnly)
 }
 
 
+LedChain* ledChainCreate(PinName pin, int leds, int bytesPerLed, const char* who)
+{
+    return Ws2812::create(pin, leds, bytesPerLed, who);
+}
+
+
+bool ledChainCapable(PinName pin)
+{
+    return Ws2812::capable(pin);
+}
+
+
 bool Ws2812::capable(PinName pin)
 {
     return findChannel(pin, false) != nullptr;

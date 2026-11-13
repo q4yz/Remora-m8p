@@ -11,8 +11,8 @@
 /***********************************************************************
     "Stepgen" modules on the event driven step generation, board family
     independent: the logic is drivers/stepScheduler, the timer the
-    family's (stepTimer.h, STM32G0: TIM3). A family without one keeps
-    the weak defaults below and the Stepgen modules in the base thread.
+    family's (stepTimer.h, REMORA_HAS_STEP_TIMER; STM32G0: TIM3). A
+    family without one keeps the Stepgen modules in the base thread.
 ************************************************************************/
 
 #define STEP_DIR_SETUP_NS   5000            // direction stable before the next step (external drivers ~5 us)
@@ -20,10 +20,14 @@
 
 bool stepgenInterrupt = false;
 
-// a family without a step timer (no TARGET_.../drivers/stepTimer)
-__attribute__((weak)) bool stepTimerAvailable(void) { return false; }
-__attribute__((weak)) uint32_t stepTimerHz(void) { return 0; }
-__attribute__((weak)) bool stepTimerStart(StepScheduler*) { return false; }
+#ifndef REMORA_HAS_STEP_TIMER
+// a family without a step timer: the Stepgen modules stay in the base thread
+bool stepTimerAvailable(void) { return false; }
+uint32_t stepTimerHz(void) { return 0; }
+bool stepTimerStart(StepScheduler*) { return false; }
+void stepTimerWait(uint32_t) { }
+uint32_t stepTimerBusyMax(void) { return 0; }
+#endif
 
 
 class BoardStepPins : public StepPins
@@ -33,6 +37,7 @@ class BoardStepPins : public StepPins
         Pin* dirPin[STEPSCHED_JOINTS] = {};
         void step(uint8_t j, bool high) override { this->stepPin[j]->set(high); }
         void dir(uint8_t j, bool forward) override { this->dirPin[j]->set(forward); }
+        void wait(uint32_t ticks) override { stepTimerWait(ticks); }
 };
 
 static BoardStepPins pins;
@@ -87,8 +92,9 @@ static bool startScheduler()
     }
     sched = s;
     baseThread->registerModule(new StepgenCommand());
-    printf("Step Generator Interrupt: pulse %d ns, direction setup %d ns, up to %d steps/s per joint\n",
-           STEP_PULSE_MIN_NS, STEP_DIR_SETUP_NS, STEP_MAX_RATE);
+    printf("Step Generator Interrupt: pulse %d ns (%s), direction setup %d ns, up to %d steps/s per joint\n",
+           STEP_PULSE_MIN_NS, s->getInlinePulse() ? "one interrupt per step" : "an interrupt for each edge",
+           STEP_DIR_SETUP_NS, STEP_MAX_RATE);
     return true;
 }
 
@@ -122,7 +128,7 @@ bool createStepgenInterrupt(int joint, const char* step, const char* dir, const 
     ptrJointFeedback[joint] = &txData.jointFeedback[joint];
     ptrJointEnable = &rxData.jointEnable;
 
-    jointMask |= (uint8_t)(1u << joint);    // the servo module passes its commands from now on
+    jointMask |= (uint8_t)(1u << joint);    // the base thread module passes its commands from now on
     sched->addJoint((uint8_t)joint, &txData.jointFeedback[joint]);
     printf("Stepgen joint %d on the interrupt step generation: step %s, direction %s, enable %s\n", joint, step, dir,
            enable);
@@ -135,6 +141,7 @@ void stepgenInterruptReport(void)
     if (!sched) return;
     uint32_t tpu = stepTimerHz() / 1000000;
     if (!tpu) return;
-    printf("[debug] stepgen: interrupt, %lu interrupts, %lu steps, latest edge %lu us late\n",
-           (unsigned long)sched->events, (unsigned long)sched->steps, (unsigned long)(sched->lateMax / tpu));
+    printf("[debug] stepgen: interrupt, %lu interrupts, %lu steps, latest edge %lu us late, longest interrupt %lu us\n",
+           (unsigned long)sched->events, (unsigned long)sched->steps, (unsigned long)(sched->lateMax / tpu),
+           (unsigned long)(stepTimerBusyMax() / tpu));
 }

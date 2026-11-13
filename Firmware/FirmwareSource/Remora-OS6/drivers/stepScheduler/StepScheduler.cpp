@@ -5,6 +5,7 @@
 
 StepScheduler::StepScheduler(StepPins& pins, uint32_t timerHz, uint32_t pulseNs, uint32_t dirSetupNs, uint32_t maxRate) :
     pins(pins),
+    nUsed(0),
     timerHz(timerHz),
     now(0),
     events(0),
@@ -18,6 +19,7 @@ StepScheduler::StepScheduler(StepPins& pins, uint32_t timerHz, uint32_t pulseNs,
     // a step is a pulse high and at least as long low; and not above maxRate
     this->minInterval = 2 * this->pulseTicks;
     if (maxRate && timerHz / maxRate > this->minInterval) this->minInterval = timerHz / maxRate;
+    this->inlinePulse = pulseNs <= STEPSCHED_INLINE_PULSE_NS;
     this->idleTicks = (uint32_t)((uint64_t)timerHz * STEPSCHED_IDLE_US / 1000000u);
 }
 
@@ -31,7 +33,9 @@ bool StepScheduler::addJoint(uint8_t j, volatile int32_t* feedback)
     J.pForward = true;
     this->pins.dir(j, true);
     this->pins.step(j, false);
-    J.used = true;                          // last: the interrupt looks at it from now on
+    J.used = true;
+    this->used[this->nUsed] = &J;
+    this->nUsed = (uint8_t)(this->nUsed + 1);   // last: the interrupt looks at it from now on
     return true;
 }
 
@@ -56,10 +60,9 @@ void StepScheduler::command(uint8_t j, int32_t frequency, bool enabled)
 }
 
 
-// a new command for joint j (interrupt)
-void StepScheduler::apply(uint8_t j)
+// a new command for the joint (interrupt)
+void StepScheduler::apply(Joint& J)
 {
-    Joint& J = this->joint[j];
     J.seen = J.pSeq;
     uint32_t interval = J.pInterval;
     bool forward = J.pForward;
@@ -67,7 +70,7 @@ void StepScheduler::apply(uint8_t j)
     if (interval && forward != J.forward)
     {
         J.forward = forward;
-        this->pins.dir(j, forward);
+        this->pins.dir(this->index(J), forward);
         J.notBefore = this->now + this->dirSetupTicks;
     }
 
@@ -81,15 +84,18 @@ void StepScheduler::apply(uint8_t j)
     if (J.high) return;                     // the pulse ends first, then last + interval
 
     // running: one new interval after the last step; from a stop: half an interval (the mean phase).
-    // A legal "last + interval" is at most an interval (plus the slack of an early edge) ahead of now.
-    // Anything else is in the past, or J.last is so old that the 32 bit time wrapped (2^31 ticks,
-    // 33.5 s at 64 MHz: a joint standing still that long and then started with a slow command first,
-    // as LinuxCNC's homing does, waited up to 33 s, no steps and a following error): then now.
+    // A legal "last + interval" is at most an interval (plus the slack of an early edge) ahead of now,
+    // or less than an interval behind (the interrupt is late, the step follows at once and the rhythm
+    // stays). Anything else is long past (the joint got faster), or J.last is so old that the 32 bit
+    // time wrapped (2^31 ticks, 33.5 s at 64 MHz: a joint standing still that long and then started
+    // with a slow command first, as LinuxCNC's homing does, waited up to 33 s, no steps and a
+    // following error): then now.
     uint32_t next;
     if (wasRunning)
     {
         next = J.last + interval;
-        if ((uint32_t)(next - this->now) > interval + STEPSCHED_SLACK_TICKS) next = this->now;
+        int32_t ahead = (int32_t)(next - this->now);
+        if (ahead > (int32_t)(interval + STEPSCHED_SLACK_TICKS) || ahead < -(int32_t)interval) next = this->now;
     }
     else
     {
@@ -109,14 +115,26 @@ bool StepScheduler::dirWaiting(const Joint& J) const
 }
 
 
-// the edge of joint j that is due (interrupt)
-void StepScheduler::edge(uint8_t j)
+// the step that is due: pin high, count (interrupt)
+void StepScheduler::rise(Joint& J)
 {
-    Joint& J = this->joint[j];
+    int32_t late = (int32_t)(this->now - J.next);
+    if (late > 0 && (uint32_t)late > this->lateMax) this->lateMax = (uint32_t)late;
 
+    this->pins.step(this->index(J), true);
+    J.count += J.forward ? 1 : -1;
+    if (J.feedback) *J.feedback = J.count;
+    this->steps++;
+    J.last = J.next;                        // the rhythm on the scheduled time: a late edge is no lost step
+}
+
+
+// a pulse with an interrupt of its own for its end: the edge of the joint that is due (interrupt)
+void StepScheduler::edge(Joint& J)
+{
     if (J.high)
     {
-        this->pins.step(j, false);
+        this->pins.step(this->index(J), false);
         J.high = false;
         if (!J.interval)
         {
@@ -131,44 +149,60 @@ void StepScheduler::edge(uint8_t j)
         return;
     }
 
-    int32_t late = (int32_t)(this->now - J.next);
-    if (late > 0 && (uint32_t)late > this->lateMax) this->lateMax = (uint32_t)late;
-
-    this->pins.step(j, true);
+    this->rise(J);
     J.high = true;
-    J.count += J.forward ? 1 : -1;
-    if (J.feedback) *J.feedback = J.count;
-    this->steps++;
-    J.last = J.next;                        // the rhythm on the scheduled time: a late edge is no lost step
     J.next = this->now + this->pulseTicks;  // the pulse on the real time
 }
 
 
 uint32_t StepScheduler::onTimer(uint32_t elapsed)
 {
-    this->now += elapsed;
+    uint32_t now = this->now + elapsed;
+    this->now = now;
     this->events++;
 
-    for (uint8_t j = 0; j < STEPSCHED_JOINTS; j++)
-    {
-        Joint& J = this->joint[j];
-        if (J.used && J.pSeq != J.seen) this->apply(j);
-    }
-
     uint32_t best = this->idleTicks;
-    for (uint8_t j = 0; j < STEPSCHED_JOINTS; j++)
+    uint32_t risen = 0;                     // joints whose pulse ends in this interrupt
+    uint8_t n = this->nUsed;
+    for (uint8_t i = 0; i < n; i++)
     {
-        Joint& J = this->joint[j];
-        if (!J.used || !J.active) continue;
-        // the edges due now (or within the slack): at most a step and the end of the one before
-        for (int k = 0; k < 2 && J.active && (int32_t)(J.next - this->now) <= STEPSCHED_SLACK_TICKS; k++)
-        {
-            this->edge(j);
-        }
+        Joint& J = *this->used[i];
+        if (J.pSeq != J.seen) this->apply(J);
         if (!J.active) continue;
-        int32_t d = (int32_t)(J.next - this->now);
+
+        int32_t d = (int32_t)(J.next - now);
+        if (d <= STEPSCHED_SLACK_TICKS)     // due now, or within the slack
+        {
+            if (this->inlinePulse)
+            {
+                this->rise(J);
+                risen |= 1u << i;
+                // the pulse ends below, about a pulse from now: low at least as long after that
+                uint32_t next = J.last + J.interval;
+                uint32_t lowEnd = now + 2 * this->pulseTicks;
+                if ((int32_t)(next - lowEnd) < 0) next = lowEnd;
+                J.next = next;
+            }
+            else
+            {
+                // at most a step and the end of the one before
+                this->edge(J);
+                if (J.active && (int32_t)(J.next - now) <= STEPSCHED_SLACK_TICKS) this->edge(J);
+                if (!J.active) continue;
+            }
+            d = (int32_t)(J.next - now);
+        }
         if (d < 1) d = 1;
         if ((uint32_t)d < best) best = (uint32_t)d;
+    }
+
+    if (risen)
+    {
+        this->pins.wait(this->pulseTicks);
+        for (uint8_t i = 0; i < n; i++)
+        {
+            if (risen & (1u << i)) this->pins.step(this->index(*this->used[i]), false);
+        }
     }
     return best;
 }

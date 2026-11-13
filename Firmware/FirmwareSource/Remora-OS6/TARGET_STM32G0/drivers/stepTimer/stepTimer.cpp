@@ -29,6 +29,7 @@
 static StepScheduler* sched = nullptr;
 static volatile uint16_t target = 0;        // the compare value of this event (the scheduler's "now")
 static uint16_t lastTarget = 0;
+static volatile uint16_t busyMax = 0;       // ticks, the longest interrupt (from its compare time to its end)
 
 
 static void timerIrq()
@@ -47,6 +48,23 @@ static void timerIrq()
     if ((int16_t)(next - cnt) < TIMER_MARGIN) next = (uint16_t)(cnt + TIMER_MARGIN);
     TIM3->CCR1 = next;
     target = next;
+
+    uint16_t busy = (uint16_t)(cnt - now);
+    if (busy > busyMax) busyMax = busy;
+}
+
+
+// busy wait in the interrupt (the width of a step pulse), ticks < 32768
+void stepTimerWait(uint32_t ticks)
+{
+    uint16_t start = (uint16_t)TIM3->CNT;
+    while ((uint16_t)((uint16_t)TIM3->CNT - start) < ticks) { }
+}
+
+
+uint32_t stepTimerBusyMax(void)
+{
+    return busyMax;
 }
 
 

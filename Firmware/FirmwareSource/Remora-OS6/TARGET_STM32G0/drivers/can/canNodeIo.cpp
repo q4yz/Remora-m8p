@@ -1,7 +1,7 @@
 #include "canNodeIo.h"
+#include "configuration.h"                  // board.h: BOARD_NODE_RESERVED_PINS
 
-// STM32G0: the CAN nodes, and the hub's TMC2209 UART (modules/tmc/tmc2209G0.cpp, the node's driver)
-#if defined(TARGET_STM32G0)
+// STM32G0: the CAN nodes, and the hub's TMC2209 UART (modules/tmc/tmc2209Uart.cpp, the node's driver)
 
 #include "stm32g0xx_hal.h"
 #include "canProtocol.h"
@@ -43,9 +43,17 @@ bool canIoPinExists(uint8_t pin)
 
 bool canIoPinReserved(uint8_t pin)
 {
-    // EBB42: CAN on PB0 / PB1 (FDCAN2), USB on PA11 / PA12
-    return pin == CAN_PIN(1, 0) || pin == CAN_PIN(1, 1) ||
-           pin == CAN_PIN(0, 11) || pin == CAN_PIN(0, 12);
+#ifdef BOARD_NODE_RESERVED_PINS
+    // the pins the node board uses itself (board.h)
+    static const uint8_t reserved[] = { BOARD_NODE_RESERVED_PINS };
+    for (unsigned i = 0; i < sizeof(reserved); i++)
+    {
+        if (pin == reserved[i]) return true;
+    }
+#else
+    (void)pin;
+#endif
+    return false;
 }
 
 
@@ -199,5 +207,3 @@ void canIoRgbRelease(uint8_t pin)
     delete rgbStrip[i];
     rgbStrip[i] = nullptr;
 }
-
-#endif
