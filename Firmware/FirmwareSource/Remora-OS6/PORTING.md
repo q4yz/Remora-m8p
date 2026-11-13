@@ -122,5 +122,5 @@ the base thread.
 | Family | Boards | State |
 |---|---|---|
 | STM32G0 | Manta M8P, EBB42, EBB SB2209 | everything, built by the CI, run on hardware |
-| STM32F4 | Octopus / Octopus Pro F446 and F429 (built by the CI), SKR 2, Monster8, Robin Nano 3, Spider, Spider King | link on `RemoraLink`, step timer (TIM12), tick timer (TIM7, hub TMC2209 UART), MCU temperature, thread statistics, boot info; not yet: CAN (bxCAN), LED chains; not yet run on hardware |
+| STM32F4 | Octopus / Octopus Pro F446 and F429 (built by the CI), SKR 2, Monster8, Robin Nano 3, Spider, Spider King | everything a hub needs: link on `RemoraLink`, step timer (TIM12), tick timer (TIM7, hub TMC2209 UART), CAN hub (bxCAN, `drivers/can/RemoraCAN`), LED chains (TIM1/2/3/4/8 + DMA stream, `drivers/ws2812`), MCU temperature, thread statistics, boot info; no USB console (no F4 CAN node); not yet run on hardware |
 | STM32F1, STM32H7, LPC176x | Robin E3, SKR Mini E3, SKR 3, SKR V1.4 | required layer only, not built by the CI |
