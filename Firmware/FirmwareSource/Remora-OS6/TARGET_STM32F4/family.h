@@ -44,6 +44,8 @@ static inline uint32_t apb1TimerHz(void)
 #define REMORA_HAS_STEP_TIMER       // stepTimer.h: interrupt step generation (TIM12)
 #define REMORA_HAS_TICK_TIMER       // tickTimer.h: the tick of the bit-banged TMC2209 UART (TIM7)
 #define REMORA_HAS_NODE_IO          // canNodeIo.h: GPIO / ADC by pin byte (the TMC2209 UART)
+#define REMORA_HAS_CAN              // CanBus.h: canBusCreate (bxCAN, polled)
+#define REMORA_HAS_LED_CHAIN        // ledChain.h: WS2812 chains (timer + DMA stream)
 #define REMORA_HAS_MCU_TEMP         // mcuTempSensor.h: the internal temperature sensor
 #define REMORA_HAS_THREAD_STATS     // pruThread: run times and overruns (debug builds)
 #define REMORA_HAS_BOOT_INFO        // bootInfo.h: reset cause (debug builds)

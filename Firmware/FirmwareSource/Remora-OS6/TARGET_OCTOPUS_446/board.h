@@ -22,8 +22,21 @@
 // config.txt upload over the SPI link while LinuxCNC is offline (drivers/sdUpload)
 #define BOARD_SD_UPLOAD
 
+// CAN hub for expansion nodes (EBB42, SB2209; CAN_PROTOCOL.md): CAN1 on PD0 (RX) / PD1 (TX), alternate
+// function 9, the on-board transceiver. The arguments of the family's CAN driver (canBusCreate)
+#define BOARD_CAN               CAN1, GPIOD, 0, 1, GPIO_AF9_CAN1
+
 // Pins the board itself uses: config.txt is refused when a module names one (two outputs driving
-// each other, or the firmware's own link and console broken)
-#define BOARD_RESERVED_PINS     { "PA_4",  "SPI link to the CB1 / Pi (CS)" },   { "PA_5", "SPI link to the CB1 / Pi (SCK)" },     { "PA_6",  "SPI link to the CB1 / Pi (MISO)" }, { "PA_7", "SPI link to the CB1 / Pi (MOSI)" },     { "PC_8",  "SD card (D0)" },  { "PC_9",  "SD card (D1)" },  { "PC_10", "SD card (D2)" },     { "PC_11", "SD card (D3)" },  { "PC_12", "SD card (CLK)" }, { "PD_2",  "SD card (CMD)" },     { "PA_11", "USB" },           { "PA_12", "USB" },     { "PA_13", "SWD" },           { "PA_14", "SWD" },     { "PH_0",  "12 MHz crystal" }, { "PH_1", "12 MHz crystal" },     { "PA_9",  "console UART (TX)" }, { "PA_10", "console UART (RX)" },   /* USART1, the TFT header */
+// each other, or the firmware's own link and console broken). Console: USART1, the TFT header
+#define BOARD_RESERVED_PINS \
+    { "PA_4",  "SPI link to the CB1 / Pi (CS)" },   { "PA_5",  "SPI link to the CB1 / Pi (SCK)" }, \
+    { "PA_6",  "SPI link to the CB1 / Pi (MISO)" }, { "PA_7",  "SPI link to the CB1 / Pi (MOSI)" }, \
+    { "PC_8",  "SD card (D0)" },  { "PC_9",  "SD card (D1)" },  { "PC_10", "SD card (D2)" }, \
+    { "PC_11", "SD card (D3)" },  { "PC_12", "SD card (CLK)" }, { "PD_2",  "SD card (CMD)" }, \
+    { "PD_0",  "CAN transceiver (RX)" }, { "PD_1", "CAN transceiver (TX)" }, \
+    { "PA_11", "USB" },           { "PA_12", "USB" }, \
+    { "PA_13", "SWD" },           { "PA_14", "SWD" }, \
+    { "PH_0",  "12 MHz crystal" }, { "PH_1", "12 MHz crystal" }, \
+    { "PA_9",  "console UART (TX)" }, { "PA_10", "console UART (RX)" },
 
 #endif
