@@ -4,8 +4,10 @@
 /***********************************************************************
     A classic CAN controller, as the CAN hub / node logic (CanHub,
     CanNode, this folder) uses it; no MCU dependencies. A board family
-    implements it on its peripheral (STM32G0: RemoraCAN on FDCAN, polled),
-    the PC tests with a simulated bus (Firmware/Tests/can/stubs).
+    with REMORA_HAS_CAN implements it on its peripheral and makes the
+    board's controller with canBusCreate() (STM32G0: RemoraCAN on FDCAN,
+    polled, the pins from BOARD_CAN in board.h); the PC tests have a
+    simulated bus (Firmware/Tests/can/stubs).
 ************************************************************************/
 
 #include <stdint.h>
@@ -29,5 +31,8 @@ class CanBus
         virtual uint16_t getErrorCount(void) = 0;           // transmit + receive error counters
         virtual void printStatus(void) = 0;                 // one line for the debug console
 };
+
+// the board's CAN controller, not started yet; nullptr: the board has none
+CanBus* canBusCreate(uint32_t bitrate);
 
 #endif

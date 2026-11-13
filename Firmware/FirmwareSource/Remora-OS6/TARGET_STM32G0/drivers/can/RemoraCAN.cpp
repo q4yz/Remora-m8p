@@ -1,7 +1,20 @@
 #include "RemoraCAN.h"
+#include "configuration.h"                  // board.h: BOARD_CAN
 
 #define CAN_KERNEL_CLOCK    64000000u
 #define CAN_TQ_PER_BIT      16u             // 1 sync + 13 seg1 + 2 seg2: sample point 87.5 %
+
+// the board's controller: board.h, BOARD_CAN = instance, port, RX pin, TX pin, alternate function
+CanBus* canBusCreate(uint32_t bitrate)
+{
+#ifdef BOARD_CAN
+    return new RemoraCAN(BOARD_CAN, bitrate);
+#else
+    (void)bitrate;
+    return nullptr;
+#endif
+}
+
 
 RemoraCAN::RemoraCAN(FDCAN_GlobalTypeDef* instance, GPIO_TypeDef* port, uint16_t rxPin, uint16_t txPin,
                      uint8_t alternate, uint32_t bitrate) :

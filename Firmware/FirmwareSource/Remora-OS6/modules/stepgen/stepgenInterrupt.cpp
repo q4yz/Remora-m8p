@@ -11,8 +11,8 @@
 /***********************************************************************
     "Stepgen" modules on the event driven step generation, board family
     independent: the logic is drivers/stepScheduler, the timer the
-    family's (stepTimer.h, STM32G0: TIM3). A family without one keeps
-    the weak defaults below and the Stepgen modules in the base thread.
+    family's (stepTimer.h, REMORA_HAS_STEP_TIMER; STM32G0: TIM3). A
+    family without one keeps the Stepgen modules in the base thread.
 ************************************************************************/
 
 #define STEP_DIR_SETUP_NS   5000            // direction stable before the next step (external drivers ~5 us)
@@ -20,12 +20,14 @@
 
 bool stepgenInterrupt = false;
 
-// a family without a step timer (no TARGET_.../drivers/stepTimer)
-__attribute__((weak)) bool stepTimerAvailable(void) { return false; }
-__attribute__((weak)) uint32_t stepTimerHz(void) { return 0; }
-__attribute__((weak)) bool stepTimerStart(StepScheduler*) { return false; }
-__attribute__((weak)) void stepTimerWait(uint32_t) { }
-__attribute__((weak)) uint32_t stepTimerBusyMax(void) { return 0; }
+#ifndef REMORA_HAS_STEP_TIMER
+// a family without a step timer: the Stepgen modules stay in the base thread
+bool stepTimerAvailable(void) { return false; }
+uint32_t stepTimerHz(void) { return 0; }
+bool stepTimerStart(StepScheduler*) { return false; }
+void stepTimerWait(uint32_t) { }
+uint32_t stepTimerBusyMax(void) { return 0; }
+#endif
 
 
 class BoardStepPins : public StepPins
@@ -126,7 +128,7 @@ bool createStepgenInterrupt(int joint, const char* step, const char* dir, const 
     ptrJointFeedback[joint] = &txData.jointFeedback[joint];
     ptrJointEnable = &rxData.jointEnable;
 
-    jointMask |= (uint8_t)(1u << joint);    // the servo module passes its commands from now on
+    jointMask |= (uint8_t)(1u << joint);    // the base thread module passes its commands from now on
     sched->addJoint((uint8_t)joint, &txData.jointFeedback[joint]);
     printf("Stepgen joint %d on the interrupt step generation: step %s, direction %s, enable %s\n", joint, step, dir,
            enable);

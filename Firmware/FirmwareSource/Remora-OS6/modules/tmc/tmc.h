@@ -13,7 +13,13 @@
 
 void createTMC2208(void);
 void createTMC2209(void);
-void tmcService(void);          // main loop: STM32G0 hub TMC2209s (tmc2209G0.cpp), other boards nothing
+void tmcService(void);          // main loop: the TMC2209 UART (tmc2209Uart.cpp), nothing with TMCStepper
+
+// the hub's TMC2209s on the CAN nodes' UART driver (tmc2209Uart.cpp) instead of TMCStepper +
+// SoftwareSerial (tmc2209.cpp): where the family has the tick timer and GPIO by pin byte
+#if defined(REMORA_HAS_TICK_TIMER) && defined(REMORA_HAS_NODE_IO)
+#define REMORA_TMC_UART
+#endif
 
 class TMC : public Module
 {

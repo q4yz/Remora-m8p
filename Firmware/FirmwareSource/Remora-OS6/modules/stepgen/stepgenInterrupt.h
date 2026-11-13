@@ -16,8 +16,8 @@
     driver's step rate limit, not the step timing.
 
     Board families: the timer is the family's (drivers/stepScheduler/
-    stepTimer.h, STM32G0: TARGET_STM32G0/drivers/stepTimer, TIM3); a family
-    without one keeps the Stepgen modules in the base thread.
+    stepTimer.h, REMORA_HAS_STEP_TIMER); a family without one keeps the
+    Stepgen modules in the base thread.
 ************************************************************************/
 
 #include <cstdint>

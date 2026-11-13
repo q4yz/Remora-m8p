@@ -4,10 +4,10 @@
 /***********************************************************************
     The board family's step timer for the StepScheduler
 
-    A family that supports "Step Generator": "Interrupt" implements both
-    (STM32G0: TARGET_STM32G0/drivers/stepTimer, TIM3); without them the
-    weak defaults in modules/stepgen/stepgenInterrupt.cpp say "not here"
-    and the Stepgen modules stay in the base thread.
+    A family with REMORA_HAS_STEP_TIMER (family.h) implements these
+    (STM32G0: TARGET_STM32G0/drivers/stepTimer, TIM3); without it
+    modules/stepgen/stepgenInterrupt.cpp says "not here" and the Stepgen
+    modules stay in the base thread.
 
     stepTimerStart(): from now on call sched->onTimer(elapsed) in a high
     priority interrupt, elapsed being the ticks since the last call, and

@@ -21,7 +21,10 @@
 #include "mbed.h"
 #include "stm32g0xx_hal.h"
 
-class Ws2812
+#include "ledChain.h"
+
+// the STM32G0 LedChain (ledChainCreate / ledChainCapable are create / capable)
+class Ws2812 : public LedChain
 {
     private:
 
@@ -50,12 +53,12 @@ class Ws2812
 
         // start sending leds * bytesPerLed bytes (in the chip's byte order); false while the last
         // transfer is still running or its reset time (> 280 us low) has not passed: try again
-        bool send(const uint8_t* bytes);
-        bool busy(void);
+        bool send(const uint8_t* bytes) override;
+        bool busy(void) override;
         int getLeds(void) const { return this->leds; }
         PinName getPin(void) const { return this->pin; }
 
-        void release(void);                     // pin low, timer and DMA free again; delete afterwards
+        void release(void) override;            // pin low, timer and DMA free again; delete afterwards
 };
 
 #endif

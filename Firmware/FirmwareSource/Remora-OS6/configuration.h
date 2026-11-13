@@ -1,12 +1,15 @@
 #ifndef CONFIGURATION_H
 #define CONFIGURATION_H
 
-#if defined(TARGET_STM32G0)
-// default without a "Threads" entry in config.txt: the 64 MHz Cortex-M0+ of the STM32G0 runs 5 step
-// generators at 20 kHz, at 40 kHz the main loop starves (no SPI replies, watchdog reset)
-#define PRU_BASEFREQ    	20000
-#else
-#define PRU_BASEFREQ    	40000 //24000   // PRU Base thread ISR update frequency (hz)
+// The board (TARGET_<BOARD>/board.h) and its MCU family (TARGET_<FAMILY>/family.h), see PORTING.md.
+// The PC tests of the portable logic (Firmware/Tests) build without them.
+#if defined(__MBED__)
+#include "family.h"
+#include "board.h"
+#endif
+
+#ifndef PRU_BASEFREQ
+#define PRU_BASEFREQ    	40000           // PRU Base thread ISR update frequency (hz), a family may set its own
 #endif
 #define PRU_SERVOFREQ       1000            // PRU Servo thread ISR update freqency (hz)
 #define OVERSAMPLE          3
@@ -34,10 +37,8 @@
 #define PRU_OVERTEMP        0x6f746d70      // "otmp" SPI payload - MCU over temperature shutdown (mcuTemp), latched until reset
 #define PRU_UPLOAD          0x75706c64      // "upld" SPI payload - SD card file upload while LinuxCNC is offline
 
-// Boards supporting the SD card upload over SPI (drivers/sdUpload): the STM32F4 boards with an SDIO
-// card slot, and the Manta M8P whose SD card has its own SPI bus
-#if (defined(TARGET_STM32F4) && (defined(TARGET_SKRV2) || defined(TARGET_OCTOPUS_446) || defined(TARGET_BLACK_F407VE) || defined(TARGET_OCTOPUS_429))) \
-    || defined(TARGET_MANTA8)
+// SD card upload over SPI (drivers/sdUpload) on the boards that can: board.h, BOARD_SD_UPLOAD
+#ifdef BOARD_SD_UPLOAD
 #define SD_UPLOAD
 #endif
 

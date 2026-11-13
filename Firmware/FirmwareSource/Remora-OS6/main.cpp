@@ -28,15 +28,17 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <string> 
 #include "FATFileSystem.h"
 
-#if defined TARGET_LPC176X || TARGET_STM32F1 || TARGET_SPIDER || TARGET_SPIDER_KING || TARGET_MONSTER8 || TARGET_ROBIN_3 || TARGET_MANTA8
-#include "SDBlockDevice.h"
-#elif defined TARGET_SKRV2 || TARGET_OCTOPUS_446 || TARGET_BLACK_F407VE || TARGET_OCTOPUS_429 | TARGET_SKRV3
+#include "configuration.h"                  // with the board's board.h and its family's family.h
+
+#ifdef BOARD_SD_SDIO
 #include "SDIOBlockDevice.h"
+#else
+#include "SDBlockDevice.h"
 #endif
 
-#include "configuration.h"
 #include "remora.h"
 
+#include "sdBus.h"
 #ifdef SD_UPLOAD
 #include "sdUpload.h"
 #endif
@@ -74,11 +76,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "stepgen.h"
 #include "stepgenInterrupt.h"
 
-#if defined(TARGET_MANTA8)
-// CAN expansion boards (CAN_PROTOCOL.md), the M8P is the hub
+#if defined(BOARD_CAN) && defined(REMORA_HAS_CAN)
+// CAN expansion boards (CAN_PROTOCOL.md), this board is the hub
 #define CAN_HUB
 #include "CanHub.h"
-#include "RemoraCAN.h"                     // the STM32G0 FDCAN implementation of CanBus
 #endif
 #include "switch.h"
 #include "temperature.h"
@@ -142,79 +143,13 @@ volatile uint16_t* ptrOutputs;
         OBJECTS etc                                           
 ************************************************************************/
 
-// SD card access and Remora communication protocol
-#if defined TARGET_SKRV1_4
-    SDBlockDevice blockDevice(P0_9, P0_8, P0_7, P0_6);  // mosi, miso, sclk, cs
-    RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData);
-
-#elif defined TARGET_SKRV2 || TARGET_OCTOPUS_446 || TARGET_BLACK_F407VE || TARGET_OCTOPUS_429 || TARGET_SKRV3
-    SDIOBlockDevice blockDevice;
-    RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData, SPI1, PA_4);
-
-#elif defined TARGET_MONSTER8
-    SDBlockDevice blockDevice(PC_12, PC_11, PC_10, PC_9);  // mosi, miso, sclk, cs
-    RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData, SPI1, PA_4);
-
-#elif defined TARGET_ROBIN_3
-    SDBlockDevice blockDevice(PC_12, PC_11, PC_10, PC_9);  // mosi, miso, sclk, cs
-    RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData, SPI1, PE_10);  //use PE_10 as "slave select"
-
-#elif defined TARGET_ROBIN_E3
-    SDBlockDevice blockDevice(PB_15, PB_14, PB_13, PA_15);  // mosi, miso, sclk, cs
-    RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData, SPI1, PA_4);
-
-#elif defined TARGET_SKR_MINI_E3
-    SDBlockDevice blockDevice(PA_7, PA_6, PA_5, PA_4);  // mosi, miso, sclk, cs
-    RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData, SPI1, PC_1);    // use PC_1 as "slave select"
-
-#elif defined TARGET_SPIDER
-    SDBlockDevice blockDevice(PA_7, PA_6, PA_5, PA_4);  // mosi, miso, sclk, cs
-    RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData, SPI1, PC_6);    // use PC_6 as "slave select"
-
-#elif defined TARGET_SPIDER_KING
-    SDBlockDevice blockDevice(PA_7, PA_6, PA_5, PA_4);  // mosi, miso, sclk, cs
-    RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData, SPI2, PB_12);    // use PB_12 as "slave select" on SPI2
-
-#elif defined TARGET_MANTA8
-    // BTT Manta M8P V1.0 / V1.1: MCU SD card on SPI1 (shared with the TMC drivers), CS PA_8
-    SDBlockDevice blockDevice(PA_7, PA_6, PA_5, PA_8);  // mosi, miso, sclk, cs
-    // Raspberry Pi / CM4 link on SPI2 via the EXP2 header, hardware NSS on PB_12
-    RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData, SPI2, PB_12);
-
+// SD card access and Remora communication protocol, the pins from the board's board.h
+#ifdef BOARD_SD_SDIO
+SDIOBlockDevice blockDevice;
+#else
+SDBlockDevice blockDevice(BOARD_SD_SPI_PINS);       // mosi, miso, sclk, cs
 #endif
-
-#if defined TARGET_MANTA8
-#include "pinmap.h"
-#include "PeripheralPins.h"
-
-// The SD card's SPI1 lines (PA5 SCK, PA6 MISO, PA7 MOSI, PA8 CS) also run to the stepper driver
-// sockets. mbed's SDBlockDevice::deinit() leaves them driven for good, so between card accesses they
-// go to analog (high impedance, the reset state): the MCU never drives a line a driver module or a
-// jumper may hold. The card has its own pull-up on CS, it stays deselected.
-void sdBusRelease(void)
-{
-    GPIO_InitTypeDef g = {0};
-    g.Pin = GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8;
-    g.Mode = GPIO_MODE_ANALOG;
-    g.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOA, &g);
-}
-
-void sdBusAcquire(void)
-{
-    // CS high (deselected) before SCK and MOSI come back
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
-    GPIO_InitTypeDef g = {0};
-    g.Pin = GPIO_PIN_8;
-    g.Mode = GPIO_MODE_OUTPUT_PP;
-    g.Pull = GPIO_NOPULL;
-    g.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOA, &g);
-    pinmap_pinout(PA_5, PinMap_SPI_SCLK);
-    pinmap_pinout(PA_6, PinMap_SPI_MISO);
-    pinmap_pinout(PA_7, PinMap_SPI_MOSI);
-}
-#endif
+RemoraComms* comms = new RemoraComms(ptrRxData, ptrTxData BOARD_LINK_SPI);
 
 // Watchdog
 Watchdog& watchdog = Watchdog::get_instance();
@@ -317,23 +252,11 @@ void setup()
 {
     printf("\n2. Setting up DMA and threads\n");
 
-    // TODO: we can probably just deinit the blockdevice for all targets....?
-
-    #if defined TARGET_STM32F4
-    // deinitialise the SDIO device to avoid DMA issues with the SPI DMA Slave on the STM32F4
-    blockDevice.deinit();
-    #endif
-
-    #if defined TARGET_SKR_MINI_E3
-    // remove the SD device as we are sharing the SPI with the comms module
-    blockDevice.deinit();
-    #endif
-
-    #if defined TARGET_MANTA8
-    // release the SD card, its SPI bus is shared with the TMC drivers
+#ifdef BOARD_SD_RELEASE
+    // the SD card is not used after config.txt is read (board.h says why on this board)
     blockDevice.deinit();
     sdBusRelease();
-    #endif
+#endif
 
     // initialise the Remora comms 
     comms->init();
@@ -344,29 +267,13 @@ void setup()
 // Pin names as the STM32 Pin class parses them ("PA_2", "PC_15"). A module with any other pin name
 // would run with an unconfigured pin and hard fault once the threads start, a boot loop in which
 // config.txt can no longer be replaced over SPI.
-#if defined(TARGET_STM32F1)
-#define CONFIG_PIN_LAST_PORT    'E'
-#elif defined(TARGET_STM32G0)
-#define CONFIG_PIN_LAST_PORT    'F'
-#elif defined(TARGET_STM32F4) || defined(TARGET_STM32H7)
-#define CONFIG_PIN_LAST_PORT    'H'
-#endif
-
 #ifdef CONFIG_PIN_LAST_PORT
-// Pins the board itself uses: a module on one of them would make the MCU drive a line another driver
-// already drives (CB1 / Pi SPI, CAN transceiver, USB hub, crystal) - two outputs against each other
-// is how a GPIO, or the whole MCU, burns out - or break the firmware's own link and console.
+// Pins the board itself uses (board.h, BOARD_RESERVED_PINS): a module on one of them would make
+// the MCU drive a line another driver already drives, or break the firmware's own link and console.
 struct reservedPin_t { const char* pin; const char* use; };
 static const reservedPin_t reservedPins[] = {
-#if defined TARGET_MANTA8
-    { "PB_11", "SPI link to the CB1 / Pi (MOSI)" }, { "PB_12", "SPI link to the CB1 / Pi (CS)" },
-    { "PB_13", "SPI link to the CB1 / Pi (SCK)" },  { "PB_14", "SPI link to the CB1 / Pi (MISO)" },
-    { "PD_12", "CAN transceiver (RX)" },            { "PD_13", "CAN transceiver (TX)" },
-    { "PA_5",  "SD card (SCK)" },  { "PA_6", "SD card (MISO)" }, { "PA_7", "SD card (MOSI)" }, { "PA_8", "SD card (CS)" },
-    { "PA_11", "USB" },            { "PA_12", "USB" },
-    { "PA_13", "SWD" },            { "PA_14", "SWD" },
-    { "PF_0",  "8 MHz crystal" },  { "PF_1",  "8 MHz crystal" },
-    { "PE_8",  "console UART (TX)" }, { "PE_9", "console UART (RX)" },
+#ifdef BOARD_RESERVED_PINS
+    BOARD_RESERVED_PINS
 #endif
     { nullptr, nullptr }
 };
@@ -479,7 +386,7 @@ void deserialiseJSON()
 
 
 #ifdef CAN_HUB
-RemoraCAN* canBus = nullptr;
+CanBus* canBus = nullptr;
 CanHub* canHub = nullptr;
 
 void configCan()
@@ -492,9 +399,9 @@ void configCan()
     JsonObject cfg = doc["CAN"];
     uint32_t bitrate = cfg["Bitrate"] | 1000000;
 
-    // Manta M8P: FDCAN1 on PD12 (RX) / PD13 (TX), alternate function 3, on-board transceiver
-    canBus = new RemoraCAN(FDCAN1, GPIOD, 12, 13, GPIO_AF3_FDCAN1, bitrate);
-    if (!canBus->start()) return;
+    // the board's CAN controller (board.h: BOARD_CAN), made by its family's driver
+    canBus = canBusCreate(bitrate);
+    if (!canBus || !canBus->start()) return;
 
     canHub = new CanHub(canBus);
 
@@ -820,34 +727,17 @@ void debugThreadLow()
 #if REMORA_DEBUG
 // Debug output on the console UART (Manta M8P: EXP2 pin 7, 115200 baud)
 
-#if defined(TARGET_MANTA8)
+#include "bootInfo.h"
+#ifdef BOARD_RAW_CONSOLE
 #include "rawConsole.h"     // register level console, replaces the mbed serial console in debug builds
 #endif
 
 void debugBootInfo()
 {
-    printf("[debug] SystemCoreClock %lu Hz, reset cause:", (unsigned long)SystemCoreClock);
-#ifdef RCC_FLAG_PORRST
-    if (__HAL_RCC_GET_FLAG(RCC_FLAG_PORRST)) printf(" power-on");
+    printf("[debug] %s, %s, SystemCoreClock %lu Hz\n", BOARD_NAME, FAMILY_NAME, (unsigned long)SystemCoreClock);
+#ifdef REMORA_HAS_BOOT_INFO
+    familyDebugBootInfo();                  // reset cause, and what the family kept over the reset
 #endif
-#ifdef RCC_FLAG_PWRRST
-    if (__HAL_RCC_GET_FLAG(RCC_FLAG_PWRRST)) printf(" power-on");
-#endif
-    if (__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST)) printf(" reset-pin");
-    if (__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST)) printf(" software");
-    if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) printf(" WATCHDOG");
-    printf("\n");
-    __HAL_RCC_CLEAR_RESET_FLAGS();
-
-    // what the threads did before this reset (TAMP backup registers survive it, not a power cycle)
-    uint32_t bMax, bOvr, sMax, sOvr;
-    pruThread::bkpEnable();
-    pruThread::bkpLoad(0, &bMax, &bOvr);
-    pruThread::bkpLoad(1, &sMax, &sOvr);
-    uint32_t tpu = SystemCoreClock / 1000000;
-    printf("[debug] before this reset: base thread max %lu us, %lu overruns; servo thread max %lu us, %lu overruns\n",
-           (unsigned long)(bMax / tpu), (unsigned long)bOvr, (unsigned long)(sMax / tpu), (unsigned long)sOvr);
-    pruThread::bkpClear();
 }
 
 void debugLinkReport(int state)
@@ -857,8 +747,8 @@ void debugLinkReport(int state)
     static const char* const names[] = {"SETUP", "START", "IDLE", "RUNNING", "STOP", "RESET", "WDRESET"};
     static uint32_t last = 0;
 
-    if (state == ST_RUNNING || (HAL_GetTick() - last) < 1000) return;
-    last = HAL_GetTick();
+    if (state == ST_RUNNING || (remoraMillis() - last) < 1000) return;
+    last = remoraMillis();
 
     printf("[debug] %s reset-pin=%d frames=%lu read=%lu write=%lu rejected=%lu (last 0x%08lx) torn=%lu rearms=%lu lost=%lu late=%lu dma-timeouts=%lu config=%s\n",
            names[state], (int)PRUreset,
@@ -866,6 +756,7 @@ void debugLinkReport(int state)
            (unsigned long)comms->dbgRejects, (unsigned long)comms->dbgLastBad, (unsigned long)comms->dbgTorn, (unsigned long)comms->dbgRearms, (unsigned long)comms->dbgLost, (unsigned long)comms->dbgLate, (unsigned long)comms->dbgTimeouts,
            configError ? "ERROR" : "ok");
 
+#ifdef REMORA_HAS_THREAD_STATS
     if (baseThread && servoThread)
     {
         // average in 0.1 us since the last report: a base run is a few us, a 40 kHz period 25 us
@@ -879,6 +770,7 @@ void debugLinkReport(int state)
                (unsigned long)(servoThread->maxTicks / tpu), (unsigned long)(servoThread->periodTicks() / tpu),
                (unsigned long)servoThread->overruns);
     }
+#endif
     stepgenInterruptReport();
 }
 #endif
@@ -889,7 +781,7 @@ int main()
     enum State currentState;
     enum State prevState;
 
-#if REMORA_DEBUG && defined(TARGET_MANTA8)
+#if REMORA_DEBUG && defined(BOARD_RAW_CONSOLE)
     rawConsolePuts("[raw] main\n");
 #endif
 
@@ -935,14 +827,14 @@ int main()
         const volatile uint8_t* out = &rxData.rxBuffer[offsetof(rxData_t, outputs)];
         uint16_t outputs = (uint16_t)(out[0] | (out[1] << 8));
 
-        canHub->service(HAL_GetTick(), currentState == ST_RUNNING, commsLost, outputs);
+        canHub->service(remoraMillis(), currentState == ST_RUNNING, commsLost, outputs);
         canMergeInputs();
     }
 #endif
 
 #if REMORA_DEBUG
     debugLinkReport(currentState);
-#if defined(TARGET_MANTA8)
+#ifdef BOARD_RAW_CONSOLE
     rawHeartbeat();
 #endif
 #endif
@@ -1116,7 +1008,7 @@ int main()
 
     reportMcuTemp();
     rgbService();
-    tmcService();                           // STM32G0: the TMC2209 UART, checks and re-configures
+    tmcService();                           // the TMC2209 UART: checks and re-configures
 
 #ifdef CAN_HUB
     // remote joints: the new frequency commands go to the nodes right after each WRITE frame
@@ -1125,15 +1017,15 @@ int main()
         static uint32_t writes = 0;
         bool fresh = comms->dbgWrites != writes;
         writes = comms->dbgWrites;
-        canHub->serviceJoints(HAL_GetTick(), fresh, commsLost, rxData.jointFreqCmd, rxData.jointEnable,
+        canHub->serviceJoints(remoraMillis(), fresh, commsLost, rxData.jointFreqCmd, rxData.jointEnable,
                               txData.jointFeedback);
     }
     // node temperatures into the process variables, set points to the node PWM outputs
     if (canHub)
     {
         canHub->writeVariables(txData.processVariable);
-        canHub->servicePwm(HAL_GetTick(), rxData.setPoint);
-        canHub->serviceRgb(HAL_GetTick(), rxData.setPoint);
+        canHub->servicePwm(remoraMillis(), rxData.setPoint);
+        canHub->serviceRgb(remoraMillis(), rxData.setPoint);
     }
 #endif
 
