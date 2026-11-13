@@ -11,7 +11,7 @@ SB2209) is the reference implementation.
 | Folder | What | PC test |
 |---|---|---|
 | `drivers/remoraLink/` | SPI link frames: queue, torn frames, re-align, link status | `Firmware/Tests/link` |
-| `drivers/stepScheduler/` | event driven step generation (`"Step Generator": "Interrupt"`) | `Firmware/Tests/stepsched` |
+| `drivers/stepScheduler/` | event driven step generation (the default with a step timer; `"Step Generator": "Base Thread"` opts out) | `Firmware/Tests/stepsched` |
 | `drivers/can/` | CAN hub / node protocol (`CanHub`, `CanNode`, `CAN_PROTOCOL.md`), the TMC2209 UART driver `NodeTmc2209` | `Firmware/Tests/can` |
 | `drivers/rgb/` | WS2812 colour orders and set point coding | (in the CAN test) |
 

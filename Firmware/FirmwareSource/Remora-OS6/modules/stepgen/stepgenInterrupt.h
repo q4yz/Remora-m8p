@@ -5,8 +5,10 @@
     "Stepgen" modules on the event driven step generation
     (drivers/stepScheduler), instead of the base thread DDS
 
-    config.txt, top level:  "Step Generator": "Interrupt"
-    (default "Base Thread": the Stepgen module in the base thread, as before)
+    The default where the board family has a step timer (STM32G0);
+    config.txt, top level:  "Step Generator": "Base Thread" keeps the
+    Stepgen modules on the base thread DDS, as before. If the timer is
+    taken (e.g. an RGB chain on PC6) they fall back to it on their own.
 
     One timer interrupt makes every joint's steps at their exact times;
     the servo thread passes LinuxCNC's frequencies and drives the enable
