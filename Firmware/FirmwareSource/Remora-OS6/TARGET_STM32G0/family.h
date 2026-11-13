@@ -23,7 +23,27 @@ static inline uint32_t remoraMillis(void) { return HAL_GetTick(); }
 // modules at 20 kHz, at 40 kHz the main loop starves (no SPI replies, watchdog reset)
 #define PRU_BASEFREQ            20000
 
-// the optional interfaces this family implements, each in TARGET_STM32G0/drivers/
+// the timers of the shared STM32 drivers (TARGET_STM/drivers): step timer TIM3; tick timer TIM14 on a
+// hub (TIM6 / TIM7 are the threads), the basic timer TIM6 on a CAN node (no threads, no pins)
+#define STEP_TIMER              TIM3
+#define STEP_TIMER_NAME         "TIM3"
+#define STEP_TIMER_IRQ          TIM3_TIM4_IRQn
+#define STEP_TIMER_CLK_ENABLE() __HAL_RCC_TIM3_CLK_ENABLE()
+#define STEP_TIMER_HZ()         SystemCoreClock
+#ifdef REMORA_CAN_NODE
+#define TICK_TIM                TIM6
+#define TICK_TIMER_NAME         "TIM6"
+#define TICK_IRQ                TIM6_DAC_LPTIM1_IRQn
+#define TICK_CLK_ENABLE()       __HAL_RCC_TIM6_CLK_ENABLE()
+#else
+#define TICK_TIM                TIM14
+#define TICK_TIMER_NAME         "TIM14"
+#define TICK_IRQ                TIM14_IRQn
+#define TICK_CLK_ENABLE()       __HAL_RCC_TIM14_CLK_ENABLE()
+#endif
+#define TICK_TIMER_HZ()         SystemCoreClock
+
+// the optional interfaces this family implements, in TARGET_STM32G0/drivers/ or the shared TARGET_STM/drivers/
 #define REMORA_HAS_STEP_TIMER       // stepTimer.h: interrupt step generation (TIM3)
 #define REMORA_HAS_TICK_TIMER       // tickTimer.h: the tick of the bit-banged TMC2209 UART / a node's base thread
 #define REMORA_HAS_NODE_IO          // canNodeIo.h: GPIO / ADC by pin byte (CAN nodes, the TMC2209 UART)

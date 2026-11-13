@@ -2,15 +2,17 @@
 #include "StepScheduler.h"
 
 #include "mbed.h"
-#include "stm32g0xx_hal.h"
+#include "configuration.h"                  // family.h: STEP_TIMER, STEP_TIMER_IRQ, STEP_TIMER_CLK_ENABLE(), STEP_TIMER_HZ(), STEP_TIMER_NAME
 
 /***********************************************************************
-    STM32G0 step timer: TIM3 (16 bit, SystemCoreClock = 64 MHz, 15.6 ns),
-    free running (ARR 0xFFFF), the next event by output compare (CCR1,
-    frozen mode, no pin). TIM3 is free on the G0: the comms thread
-    object that owns it is never started there (the hub TMC2209s run on
-    TIM14). Highest priority, with the SPI NSS edge and the TMC UART: an
-    interrupt is a few us.
+    STM32 step timer (every STM32 family with REMORA_HAS_STEP_TIMER): a
+    general purpose timer the family names in family.h, counting 16 bit
+    (ARR 0xFFFF, also on a 32 bit timer), the next event by output compare
+    (CCR1, frozen mode, no pin). Highest priority, with the SPI NSS edge
+    and the tick timer: an interrupt is a few us.
+
+    STM32G0: TIM3 at 64 MHz. STM32F4: TIM2 at 90 MHz (APB1 x 2): a 16 bit
+    period is 728 us, more than twice the longest step (TIMER_MAX_STEP).
 
     The elapsed time handed to the scheduler is the difference of two
     compare values, i.e. of two absolute counter readings, so it is
@@ -23,6 +25,8 @@
     three Z motors, a following error that grows with the speed.)
 ************************************************************************/
 
+#ifdef REMORA_HAS_STEP_TIMER
+
 #define TIMER_MARGIN        64              // ticks: the next compare at least 1 us after this interrupt
 #define TIMER_MAX_STEP      0x7FFF          // ticks: compare targets ahead by less than half the counter
 
@@ -34,8 +38,8 @@ static volatile uint16_t busyMax = 0;       // ticks, the longest interrupt (fro
 
 static void timerIrq()
 {
-    if (!(TIM3->SR & TIM_SR_CC1IF)) return;
-    TIM3->SR = ~TIM_SR_CC1IF;
+    if (!(STEP_TIMER->SR & TIM_SR_CC1IF)) return;
+    STEP_TIMER->SR = ~TIM_SR_CC1IF;
 
     uint16_t now = target;
     uint32_t d = sched->onTimer((uint16_t)(now - lastTarget));
@@ -44,9 +48,9 @@ static void timerIrq()
 
     // the next event, in the future: a late interrupt moves it, the time base stays exact
     uint16_t next = (uint16_t)(now + d);
-    uint16_t cnt = (uint16_t)TIM3->CNT;
+    uint16_t cnt = (uint16_t)STEP_TIMER->CNT;
     if ((int16_t)(next - cnt) < TIMER_MARGIN) next = (uint16_t)(cnt + TIMER_MARGIN);
-    TIM3->CCR1 = next;
+    STEP_TIMER->CCR1 = next;
     target = next;
 
     uint16_t busy = (uint16_t)(cnt - now);
@@ -57,8 +61,8 @@ static void timerIrq()
 // busy wait in the interrupt (the width of a step pulse), ticks < 32768
 void stepTimerWait(uint32_t ticks)
 {
-    uint16_t start = (uint16_t)TIM3->CNT;
-    while ((uint16_t)((uint16_t)TIM3->CNT - start) < ticks) { }
+    uint16_t start = (uint16_t)STEP_TIMER->CNT;
+    while ((uint16_t)((uint16_t)STEP_TIMER->CNT - start) < ticks) { }
 }
 
 
@@ -76,16 +80,16 @@ bool stepTimerAvailable(void)
 
 uint32_t stepTimerHz(void)
 {
-    return SystemCoreClock;
+    return STEP_TIMER_HZ();
 }
 
 
 bool stepTimerStart(StepScheduler* scheduler)
 {
-    __HAL_RCC_TIM3_CLK_ENABLE();
-    if (TIM3->CR1 & TIM_CR1_CEN)
+    STEP_TIMER_CLK_ENABLE();
+    if (STEP_TIMER->CR1 & TIM_CR1_CEN)
     {
-        printf("Step Generator Interrupt: TIM3 is used by another module (RGB on PC6, hardware PWM)\n");
+        printf("Step Generator Interrupt: " STEP_TIMER_NAME " is used by another module (RGB, hardware PWM)\n");
         return false;
     }
     sched = scheduler;
@@ -93,22 +97,24 @@ bool stepTimerStart(StepScheduler* scheduler)
     uint32_t idle = sched->getIdleTicks();
     if (idle > TIMER_MAX_STEP) idle = TIMER_MAX_STEP;
 
-    TIM3->CR1 = 0;                          // up counting, free running
-    TIM3->PSC = 0;
-    TIM3->ARR = 0xFFFF;
-    TIM3->CCMR1 = 0;                        // channel 1 output compare, frozen: no pin, only the flag
-    TIM3->CCER = 0;
-    TIM3->CNT = 0;
-    TIM3->EGR = TIM_EGR_UG;                 // load PSC
+    STEP_TIMER->CR1 = 0;                          // up counting, free running
+    STEP_TIMER->PSC = 0;
+    STEP_TIMER->ARR = 0xFFFF;
+    STEP_TIMER->CCMR1 = 0;                        // channel 1 output compare, frozen: no pin, only the flag
+    STEP_TIMER->CCER = 0;
+    STEP_TIMER->CNT = 0;
+    STEP_TIMER->EGR = TIM_EGR_UG;                 // load PSC
     lastTarget = 0;
     target = (uint16_t)idle;                // the first event: the scheduler's first elapsed is idle
-    TIM3->CCR1 = target;
-    TIM3->SR = 0;
-    TIM3->DIER = TIM_DIER_CC1IE;
-    NVIC_SetVector(TIM3_TIM4_IRQn, (uint32_t)timerIrq);
-    NVIC_SetPriority(TIM3_TIM4_IRQn, 0);
-    NVIC_EnableIRQ(TIM3_TIM4_IRQn);
-    TIM3->CR1 = TIM_CR1_CEN;
-    printf("Step Generator Interrupt: TIM3 at %lu Hz, output compare\n", (unsigned long)SystemCoreClock);
+    STEP_TIMER->CCR1 = target;
+    STEP_TIMER->SR = 0;
+    STEP_TIMER->DIER = TIM_DIER_CC1IE;
+    NVIC_SetVector(STEP_TIMER_IRQ, (uint32_t)timerIrq);
+    NVIC_SetPriority(STEP_TIMER_IRQ, 0);
+    NVIC_EnableIRQ(STEP_TIMER_IRQ);
+    STEP_TIMER->CR1 = TIM_CR1_CEN;
+    printf("Step Generator Interrupt: " STEP_TIMER_NAME " at %lu Hz, output compare\n", (unsigned long)STEP_TIMER_HZ());
     return true;
 }
+
+#endif

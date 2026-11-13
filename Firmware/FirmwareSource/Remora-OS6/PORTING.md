@@ -16,6 +16,12 @@ path, so the right two are found by name. Shared code asks
 The STM32G0 (`TARGET_STM32G0`: BTT Manta M8P, EBB42, SB2209) implements
 everything and is the reference.
 
+`TARGET_STM/` (mbed's label for every STM32) holds the drivers that are the
+same on every STM32 family once the family names its timers in `family.h`:
+the step timer (`STEP_TIMER`, ...), the tick timer (`TICK_TIM`, ...) and
+the node IO (GPIO by pin byte). Each is compiled only where the family
+declares the interface.
+
 ## Portable logic (no MCU headers, PC tested)
 
 | Folder | What | PC test |
@@ -53,9 +59,9 @@ falls back as the table says:
 
 | `family.h` | Interface | Without it | STM32G0 implementation |
 |---|---|---|---|
-| `REMORA_HAS_STEP_TIMER` | `drivers/stepScheduler/stepTimer.h`: a one-shot timer interrupt and a busy wait | Stepgen modules in the base thread | `drivers/stepTimer` (TIM3, output compare) |
-| `REMORA_HAS_TICK_TIMER` | `drivers/tickTimer/tickTimer.h`: a periodic highest priority interrupt | no CAN node firmware; hub TMC2209 on `TMCStepper` | `drivers/tickTimer` (TIM14 hub, TIM6 node) |
-| `REMORA_HAS_NODE_IO` | `drivers/can/canNodeIo.h`: GPIO, ADC, LED chains by pin byte, the unique ID | no CAN node firmware; hub TMC2209 on `TMCStepper` | `drivers/can/canNodeIo.cpp` |
+| `REMORA_HAS_STEP_TIMER` | `drivers/stepScheduler/stepTimer.h`: a one-shot timer interrupt and a busy wait | Stepgen modules in the base thread | `TARGET_STM/drivers/stepTimer` (TIM3, output compare) |
+| `REMORA_HAS_TICK_TIMER` | `drivers/tickTimer/tickTimer.h`: a periodic highest priority interrupt | no CAN node firmware; hub TMC2209 on `TMCStepper` | `TARGET_STM/drivers/tickTimer` (TIM14 hub, TIM6 node) |
+| `REMORA_HAS_NODE_IO` | `drivers/can/canNodeIo.h`: GPIO, ADC, LED chains by pin byte, the unique ID | no CAN node firmware; hub TMC2209 on `TMCStepper` | `TARGET_STM/drivers/nodeIo` |
 | `REMORA_HAS_CAN` | `drivers/can/CanBus.h`: `CanBus` and `canBusCreate()` | no CAN hub, no node | `drivers/can/RemoraCAN` (FDCAN, polled) |
 | `REMORA_HAS_LED_CHAIN` | `drivers/rgb/ledChain.h`: `LedChain`, `ledChainCreate()` | "RGB" module prints "not supported" | `drivers/ws2812` (timer + DMA) |
 | `REMORA_HAS_MCU_TEMP` | `drivers/mcuTemp/mcuTempSensor.h` | no over temperature shutdown | `drivers/mcuTemp` (ADC registers) |
@@ -116,5 +122,5 @@ the base thread.
 | Family | Boards | State |
 |---|---|---|
 | STM32G0 | Manta M8P, EBB42, EBB SB2209 | everything, built by the CI, run on hardware |
-| STM32F4 | Octopus 446 / 429 (CI compile check), SKR 2, Monster8, Robin Nano 3, Spider, Spider King | required layer only; its `RemoraComms` is not on `RemoraLink` yet |
+| STM32F4 | Octopus / Octopus Pro F446 and F429 (built by the CI), SKR 2, Monster8, Robin Nano 3, Spider, Spider King | link on `RemoraLink`, step timer (TIM12), tick timer (TIM7, hub TMC2209 UART), MCU temperature, thread statistics, boot info; not yet: CAN (bxCAN), LED chains; not yet run on hardware |
 | STM32F1, STM32H7, LPC176x | Robin E3, SKR Mini E3, SKR 3, SKR V1.4 | required layer only, not built by the CI |
