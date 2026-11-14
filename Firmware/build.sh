@@ -60,7 +60,12 @@ for t in "${TARGETS[@]}"; do
         fi
         [ -n "$out" ] && cp "$build/firmware.bin" "$out/$name.bin"
     else
-        grep -E "\[Error\]|error:" "$log" | head -10
+        # compiler errors, else the end of the log (an mbed CLI or Python error has no "error:")
+        if grep -qE "\[Error\]|error:" "$log"; then
+            grep -E "\[Error\]|error:" "$log" | head -10
+        else
+            tail -30 "$log"
+        fi
         failed+=("$name")
     fi
     rm -f "$log"
