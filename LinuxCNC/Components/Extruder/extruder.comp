@@ -11,6 +11,12 @@ as Klipper refuses an "extrude below minimum temp". One error message
 per stop. The motor enable is not gated, a disabled stepper would leave
 LinuxCNC's commanded position running away from the real one.
 
+Flow (M221): with \\fBpos-cmd-in\\fR / \\fBpos-fb-out\\fR between the joint
+and \\fBpos-cmd-out\\fR / \\fBpos-fb-in\\fR to the stepgen, the extruder's
+moves are scaled by \\fBflow-percent\\fR (10 ... 500, 0 = 100). A new value
+is rebased on the current position, so it never jumps; the feedback is
+scaled back, so LinuxCNC's following error stays as before.
+
 .nf
 loadrt extruder names=extruder-heater_extruder
 addf extruder-heater_extruder servo-thread
@@ -19,6 +25,11 @@ net extruder-PV => extruder-heater_extruder.current-temp
 net heater_extruder-vel-cmd joint.3.vel-cmd => extruder-heater_extruder.vel-cmd
 net heater_extruder-homing joint.3.homing => extruder-heater_extruder.homing
 net heater_extruder-cold-extrude extruder-heater_extruder.cold-extrude => halui.abort
+net j3pos-cmd joint.3.motor-pos-cmd => extruder-heater_extruder.pos-cmd-in
+net j3pos-cmd-flow extruder-heater_extruder.pos-cmd-out => remora.joint.3.pos-cmd
+net j3pos-fb remora.joint.3.pos-fb => extruder-heater_extruder.pos-fb-in
+net j3pos-fb-flow extruder-heater_extruder.pos-fb-out => joint.3.motor-pos-fb
+net heater_extruder-flow webgui.flow => extruder-heater_extruder.flow-percent
 .fi
 """;
 
@@ -30,6 +41,9 @@ pin in bit machine_enabled "True when machine is ON (not E-stopped)";
 pin in float vel_cmd "Extruder joint's commanded velocity (joint.N.vel-cmd)";
 pin in bit cold_extrude_enable = 1 "FALSE switches the cold-extrusion guard off";
 pin in bit homing "The extruder joint is homing (joint.N.homing): no guard";
+pin in float pos_cmd_in "Flow: the joint's motor-pos-cmd";
+pin in float pos_fb_in "Flow: the stepgen's position feedback";
+pin in float flow_percent = 100.0 "Flow: extrusion in percent, 10 ... 500 (0 = 100)";
 
 // --- User Parameters ---
 param rw float min_valid_temp = 5.0 "Failsafe: Tripped if sensor disconnects";
@@ -46,6 +60,8 @@ pin out float safe_pwm_out "Sent to Remora hardware heater pin";
 pin out bit heatsink_fan "True if temp > heatsink_fan_temp";
 pin out bit temp_ready "True if temp >= min_extrude_temp (sent to extruder)";
 pin out bit cold_extrude "True while the extruder is commanded to move below min_extrude_temp: net to halui.abort";
+pin out float pos_cmd_out "Flow: the scaled position for the stepgen";
+pin out float pos_fb_out "Flow: the feedback scaled back for the joint's motor-pos-fb";
 
 // Safety Faults (Wire these to an OR2 gate, then to E-stop)
 pin out bit fault_range "True if sensor reads < 5 or > 290";
@@ -56,6 +72,10 @@ variable double timer = 0.0;
 variable double saved_temp = 0.0;
 variable int cold_reported = 0;
 variable double moving_time = 0.0;
+variable double flow_base_in = 0.0;
+variable double flow_base_out = 0.0;
+variable double flow_factor = 1.0;
+variable int flow_started = 0;
 
 license "GPL";
 
@@ -111,6 +131,29 @@ FUNCTION(_) {
         if (fabs(vel_cmd) <= min_extrude_vel) {
             cold_reported = 0; // armed again once the extruder stands still
         }
+    }
+
+    // 4c. Flow: scale the extruder's moves, rebased on every change of the
+    // factor so a new value never jumps the position
+    {
+        double k = flow_percent;
+        if (k <= 0.0) k = 100.0;          // unset
+        if (k < 10.0) k = 10.0;
+        if (k > 500.0) k = 500.0;
+        k = k / 100.0;
+        if (!flow_started) {
+            flow_base_in = pos_cmd_in;
+            flow_base_out = pos_cmd_in;
+            flow_factor = k;
+            flow_started = 1;
+        }
+        if (k != flow_factor) {
+            flow_base_out += (pos_cmd_in - flow_base_in) * flow_factor;
+            flow_base_in = pos_cmd_in;
+            flow_factor = k;
+        }
+        pos_cmd_out = flow_base_out + (pos_cmd_in - flow_base_in) * flow_factor;
+        pos_fb_out = flow_base_in + (pos_fb_in - flow_base_out) / flow_factor;
     }
 
     // 5. Heating Watchdog (Dead-Heater Detection)
