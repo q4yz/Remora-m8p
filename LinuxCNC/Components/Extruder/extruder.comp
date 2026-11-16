@@ -17,6 +17,11 @@ moves are scaled by \\fBflow-percent\\fR (10 ... 500, 0 = 100). A new value
 is rebased on the current position, so it never jumps; the feedback is
 scaled back, so LinuxCNC's following error stays as before.
 
+Pressure advance (Klipper's): while extruding, the stepgen is moved
+\\fBpressure-advance\\fR × the extruder's speed ahead (mm per mm/s),
+smoothed over \\fBpa-smooth-time\\fR; the feedback removes it again.
+Ignored while homing and for jumps (> 500 mm/s).
+
 .nf
 loadrt extruder names=extruder-heater_extruder
 addf extruder-heater_extruder servo-thread
@@ -44,6 +49,7 @@ pin in bit homing "The extruder joint is homing (joint.N.homing): no guard";
 pin in float pos_cmd_in "Flow: the joint's motor-pos-cmd";
 pin in float pos_fb_in "Flow: the stepgen's position feedback";
 pin in float flow_percent = 100.0 "Flow: extrusion in percent, 10 ... 500 (0 = 100)";
+pin in float pressure_advance = 0.0 "Pressure advance: mm of extra extruder position per mm/s (0 = off)";
 
 // --- User Parameters ---
 param rw float min_valid_temp = 5.0 "Failsafe: Tripped if sensor disconnects";
@@ -53,6 +59,7 @@ param rw float heatsink_fan_temp = 50.0 "Threshold to turn on the cold-end fan";
 param rw float watchdog_time = 20.0 "Seconds allowed without temperature rising";
 param rw float min_extrude_vel = 0.000001 "A |vel-cmd| above this is an extruder move (units/s)";
 param rw float min_extrude_time = 0.05 "Seconds an extruder move must last before cold_extrude (ignores a homing spike)";
+param rw float pa_smooth_time = 0.040 "Pressure advance smoothing time (s), Klipper's pressure_advance_smooth_time";
 
 // --- Outputs ---
 pin out float safe_target_temp "Sent to PID command";
@@ -62,6 +69,7 @@ pin out bit temp_ready "True if temp >= min_extrude_temp (sent to extruder)";
 pin out bit cold_extrude "True while the extruder is commanded to move below min_extrude_temp: net to halui.abort";
 pin out float pos_cmd_out "Flow: the scaled position for the stepgen";
 pin out float pos_fb_out "Flow: the feedback scaled back for the joint's motor-pos-fb";
+pin out float pa_offset "Pressure advance: the extra position applied now (mm)";
 
 // Safety Faults (Wire these to an OR2 gate, then to E-stop)
 pin out bit fault_range "True if sensor reads < 5 or > 290";
@@ -76,6 +84,8 @@ variable double flow_base_in = 0.0;
 variable double flow_base_out = 0.0;
 variable double flow_factor = 1.0;
 variable int flow_started = 0;
+variable double pa_last_in = 0.0;
+variable double pa_value = 0.0;
 
 license "GPL";
 
@@ -153,7 +163,21 @@ FUNCTION(_) {
             flow_factor = k;
         }
         pos_cmd_out = flow_base_out + (pos_cmd_in - flow_base_in) * flow_factor;
-        pos_fb_out = flow_base_in + (pos_fb_in - flow_base_out) / flow_factor;
+
+        // 4d. Pressure advance: ahead by K x the extruder's (scaled) speed
+        double v = fperiod > 0.0 ? (pos_cmd_in - pa_last_in) / fperiod * flow_factor : 0.0;
+        double target = 0.0;
+        pa_last_in = pos_cmd_in;
+        if (pressure_advance > 0.0 && !homing && v > 0.0 && v < 500.0) {
+            target = pressure_advance * v;
+        }
+        double alpha = pa_smooth_time > 0.0 ? fperiod / pa_smooth_time : 1.0;
+        if (alpha > 1.0) alpha = 1.0;
+        pa_value += (target - pa_value) * alpha;
+        if (pressure_advance <= 0.0 && fabs(pa_value) < 1e-9) pa_value = 0.0;
+        pa_offset = pa_value;
+        pos_cmd_out += pa_value;
+        pos_fb_out = flow_base_in + (pos_fb_in - pa_value - flow_base_out) / flow_factor;
     }
 
     // 5. Heating Watchdog (Dead-Heater Detection)
