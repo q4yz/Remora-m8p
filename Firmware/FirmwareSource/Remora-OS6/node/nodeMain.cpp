@@ -114,6 +114,14 @@ int main()
                 printf("node: TMC2209 %s %s, %lu configuration(s)\n", canPinName(tmc.getPin(), name),
                        tmcStatusText(tmc.getStatus()), (unsigned long)tmc.getConfigs());
             }
+            NodeAdxl345& accel = node.getAccel();
+            if (accel.isActive())
+            {
+                const int16_t* a = accel.getLast();
+                printf("node: ADXL345 %s, %lu samples, %lu ACCEL frame(s), %lu FIFO overrun(s), last %d %d %d\n",
+                       accelStatusText(accel.getStatus()), (unsigned long)accel.getSamples(),
+                       (unsigned long)node.getAccelFrames(), (unsigned long)accel.getOverruns(), a[0], a[1], a[2]);
+            }
             can->printStatus();
         }
     }

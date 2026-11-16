@@ -20,6 +20,9 @@
              its UART, the hub prints the status the node reports (EMCY)
     PWM      "PWM" modules on nodes: the LinuxCNC set point (%) as duty to the
              node (PWM frame), software PWM there, the safe duty without LinuxCNC
+    accel    "ADXL345" modules on nodes: the node sends the average of the
+             accelerometer's samples every ms (ACCEL), the hub maps the axes
+             and writes mm/s^2 into up to three process variables
     temp     "Temperature" (thermistor) modules on nodes: the node sends its
              ADC readings (ANALOG), the hub turns them into the temperature,
              same Beta formula as the local module, into the process variable
@@ -119,6 +122,21 @@ typedef struct
     uint32_t rgbColor[CAN_NODE_RGB];        // in the last RGB frames
     uint32_t lastRgb;           // ms
     bool     rgbSent;           // since the configuration
+
+    // accelerometer: LinuxCNC axis a (X, Y, Z) is sensor axis accelAxis[a] times accelSign[a], in
+    // process variable accelPv[a] (-1: none)
+    bool     hasAccel;
+    uint8_t  accelModule;       // its module index
+    int8_t   accelPv[3];
+    uint8_t  accelAxis[3];
+    int8_t   accelSign[3];
+    float    accel[3];          // mm/s^2, from the last ACCEL frame
+    bool     accelValid;        // an ACCEL frame since the configuration
+    uint8_t  accelStatus;       // ACCEL_STATUS_* from EMCY
+    uint8_t  accelId;           // device ID the node read
+    bool     accelReport;       // status changed, waiting to be printed
+    uint32_t accelFrames;       // ACCEL frames received (debug)
+    uint32_t accelOverruns;     // frames with samples lost on the node
 } canNodeEntry_t;
 
 #define CAN_HUB_VARIABLES       6           // LinuxCNC process variables (VARIABLES in configuration.h)
@@ -183,6 +201,8 @@ class CanHub
         void handleJointFeedback(const canFrame_t& frame);
         void handleEmcy(const canFrame_t& frame);
         void handleAnalog(const canFrame_t& frame);
+        void handleAccel(const canFrame_t& frame);
+        void printAccel(const canNodeEntry_t* n);
         void sendPwm(canNodeEntry_t* n, const volatile float* setPoint, uint32_t now);
         void sendRgb(canNodeEntry_t* n, const volatile float* setPoint, uint32_t now);
         void printTmc(const canNodeEntry_t* n, int module);
@@ -236,8 +256,16 @@ class CanHub
         // reference in Ohm (4700 as the local module); pv: LinuxCNC process variable ("PV[i]")
         bool addThermistor(int node, const char* pin, int pv, float beta, float r0, float t0, float pullup);
 
-        // writes the node temperatures into txData.processVariable, main loop; CAN_TEMP_ERROR
-        // while a node is lost or not configured, or its sensor is open / shorted
+        // an "ADXL345" accelerometer on a node: SPI pins (nullptr / "": the EBB42 / SB2209 ones, CS PB_12,
+        // SCK PB_10, MOSI PB_11, MISO PB_2), the process variables of the X, Y, Z axes (-1: not used,
+        // at least one), axesMap the sensor axis of each as in Klipper ("x,y,z", "-y,x,z"), range in g
+        // (2, 4, 8, 16), rate the sensor's output data rate (100, 200 ... 3200 Hz)
+        bool addAdxl345(int node, const char* cs, const char* sck, const char* mosi, const char* miso,
+                        int pvX, int pvY, int pvZ, const char* axesMap, int range, int rate);
+        bool getAccel(int node, float xyz[3]);  // mm/s^2 (test); false: no reading
+
+        // writes the node temperatures and accelerations into txData.processVariable, main loop; CAN_TEMP_ERROR
+        // while a node is lost or not configured, or its sensor is open / shorted; an acceleration 0
         void writeVariables(volatile float* processVariable);
 
         // LinuxCNC set points of the hub's own modules ("SP[i]", "Period SP[i]"), call before addPwm

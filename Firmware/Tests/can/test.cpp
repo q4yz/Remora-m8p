@@ -97,6 +97,7 @@ static void run(CanHub& hub, std::vector<Node*> nodes, uint32_t& now, uint32_t m
         }
         for (Node* n : nodes) {
             simIo = &n->io;
+            n->io.adxlMs();
             n->node->service(now);
             for (int k = 0; k < CAN_NODE_BASE_FREQ / 1000; k++) {
                 n->node->baseTick();
@@ -846,6 +847,114 @@ int main(int argc, char** argv) {
         CHECK(hub2.addTmc2209(1, "PB_0", 0.11f, 0, 800, 16, true, 0));       /* CAN RX: rejected by the node */
         run(hub2, {&a}, now, 3000);
         CHECK(a.node->getState() == NODE_STATE_PREOP && hub2.runningMask() == 0 && a.node->getTmcCount() == 0);
+    }
+    else if (sc == "accel") {
+        /* EBB42 ADXL345 on SPI2 (default pins), X Y Z into PV 3 4 5, 3200 Hz */
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addThermistor(1, "PA_3", 2, 3950.0f, 100000.0f, 25.0f, 4700.0f));
+        CHECK(hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));
+        a.io.adxlXyz[0] = 100; a.io.adxlXyz[1] = -50; a.io.adxlXyz[2] = 256;      /* 1 g on Z */
+        run(hub, {&a}, now, 1500);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getAccel().getStatus() == ACCEL_STATUS_OK);
+        CHECK(a.io.adxlReg[0x31] == 0x0B && a.io.adxlReg[0x2C] == 0x0F && a.io.adxlReg[0x2D] == 0x08);
+        CHECK(a.io.configured[CAN_PIN(1, 12)] && a.io.output[CAN_PIN(1, 12)] && a.io.level[CAN_PIN(1, 12)]);  /* CS idle high */
+        const float k = 0.0039f * 9806.65f;
+        printf("  PV %.1f %.1f %.1f mm/s^2\n", simPv[3], simPv[4], simPv[5]);
+        CHECK(fabsf(simPv[3] - 100 * k) < 0.5f && fabsf(simPv[4] + 50 * k) < 0.5f && fabsf(simPv[5] - 256 * k) < 0.5f);
+        uint32_t frames = a.node->getAccelFrames(), reads = a.io.adxlReads;
+        run(hub, {&a}, now, 1000);
+        printf("  1 s: %u ACCEL frames, %d samples\n", a.node->getAccelFrames() - frames, a.io.adxlReads - (int)reads);
+        CHECK(a.node->getAccelFrames() - frames >= 990 && a.io.adxlReads - reads >= 3190);
+        a.io.adxlXyz[0] = -2000;                                                    /* a new value within a ms or two */
+        run(hub, {&a}, now, 3);
+        CHECK(fabsf(simPv[3] + 2000 * k) < 1.0f);
+        CHECK(a.node->getAccel().getOverruns() == 0);
+        /* the main loop stalls 15 ms: the FIFO (32 samples, 10 ms) runs over */
+        for (int t = 0; t < 15; t++) a.io.adxlMs();
+        run(hub, {&a}, now, 5);
+        CHECK(a.node->getAccel().getOverruns() == 1);
+        CHECK(simPv[2] == CAN_TEMP_ERROR);          /* the thermistor PV is its own (ADC 0: shorted) */
+    }
+    else if (sc == "accel-map") {
+        /* mounted turned: X = -sensor Y, Y not used, Z = sensor Z; 400 Hz, +-4 g; pins of SPI1 */
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addAdxl345(1, "PA_4", "PA_5", "PA_7", "PA_6", 0, -1, 1, "-y, x, z", 4, 400));
+        a.io.adxlXyz[0] = 10; a.io.adxlXyz[1] = 20; a.io.adxlXyz[2] = 30;
+        simPv[2] = 12345.0f;
+        run(hub, {&a}, now, 1500);
+        CHECK(a.io.adxlReg[0x31] == 0x09 && a.io.adxlReg[0x2C] == 0x0C);
+        const float k = 0.0039f * 9806.65f;
+        CHECK(fabsf(simPv[0] + 20 * k) < 0.5f && fabsf(simPv[1] - 30 * k) < 0.5f && simPv[2] == 12345.0f);
+        uint32_t frames = a.node->getAccelFrames();
+        run(hub, {&a}, now, 1000);
+        printf("  400 Hz: %u ACCEL frames in 1 s\n", a.node->getAccelFrames() - frames);
+        CHECK(a.node->getAccelFrames() - frames >= 395 && a.node->getAccelFrames() - frames <= 405);   /* only with new samples */
+        simPv[2] = 0.0f;
+    }
+    else if (sc == "accel-missing") {
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));
+        a.io.adxlPresent = false;
+        a.io.adxlXyz[2] = 256;
+        simPv[5] = 7.0f;
+        run(hub, {&a}, now, 2500);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getAccel().getStatus() == ACCEL_STATUS_MISSING);
+        CHECK(simPv[5] == 0.0f);                                                    /* no sensor: 0 */
+        a.io.adxlPresent = true;                                                    /* connected: set up within a second */
+        run(hub, {&a}, now, 1100);
+        CHECK(a.node->getAccel().getStatus() == ACCEL_STATUS_OK && simPv[5] > 9000.0f);
+        a.io.adxlPresent = false;                                                   /* unplugged again: seen at once */
+        run(hub, {&a}, now, 3);
+        CHECK(a.node->getAccel().getStatus() == ACCEL_STATUS_MISSING && a.node->getAccel().getOverruns() == 0);
+        run(hub, {&a}, now, 5);
+        CHECK(simPv[5] == 0.0f);
+    }
+    else if (sc == "accel-lost") {
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));
+        a.io.adxlXyz[2] = 256;
+        run(hub, {&a}, now, 2000);
+        CHECK(simPv[5] > 9000.0f);
+        run(hub, {}, now, 400);                                                     /* node gone */
+        CHECK(simPv[5] == 0.0f);
+        run(hub, {&a}, now, 2000);                                                  /* back, configured again */
+        CHECK(simPv[5] > 9000.0f);
+    }
+    else if (sc == "accel-config") {
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode("0e0d81e4210c", 1, "");
+        hub.reserveVariables(1u << 0);
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 0, 4, 5, "x,y,z", 16, 3200));       /* PV taken by the hub */
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 6, 4, 5, "x,y,z", 16, 3200));       /* out of range */
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 3, 5, "x,y,z", 16, 3200));       /* one PV twice */
+        CHECK(!hub.addAdxl345(1, "", "", "", "", -1, -1, -1, "x,y,z", 16, 3200));    /* no PV */
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y", 16, 3200));         /* axes map */
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,w", 16, 3200));
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 32, 3200));       /* range */
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 16, 1000));       /* rate */
+        CHECK(!hub.addAdxl345(1, "PB_10", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));  /* CS on SCK */
+        CHECK(!hub.addAdxl345(1, "XB_12", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));
+        CHECK(hub.addDigitalPin(1, "PB_2", false, false, DPIN_MOD_NONE, false, false, 0));
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));       /* MISO used */
+        CHECK(hub.addAdxl345(1, "", "", "", "PA_6", 3, 4, 5, "X,Y,Z", 16, 3200));
+        CHECK(!hub.addAdxl345(1, "PA_4", "PA_5", "PA_7", "PB_3", 1, -1, -1, "x,y,z", 16, 3200));  /* two per node */
+        CHECK(!hub.addThermistor(1, "PA_6", 1, 3950.0f, 100000.0f, 25.0f, 4700.0f)); /* its pin */
+        CHECK(!hub.addThermistor(1, "PA_3", 4, 3950.0f, 100000.0f, 25.0f, 4700.0f)); /* its PV */
+        /* the node rejects pins that are no SPI (SCK of SPI1, MOSI / MISO of SPI2) */
+        Node a(1, 2, 3);
+        RemoraCAN hc2; CanHub hub2(&hc2);
+        hub2.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub2.addAdxl345(1, "", "PA_5", "", "", 3, -1, -1, "x,y,z", 16, 3200));
+        run(hub2, {&a}, now, 3000);
+        CHECK(a.node->getState() == NODE_STATE_PREOP && hub2.runningMask() == 0 && !a.io.spiOn);
     }
     printf("%s\n", fails ? "FAILED" : "passed");
     return fails != 0;

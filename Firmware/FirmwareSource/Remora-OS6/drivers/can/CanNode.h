@@ -4,6 +4,7 @@
 #include "CanBus.h"
 #include "canProtocol.h"
 #include "NodeTmc2209.h"
+#include "NodeAdxl345.h"
 
 /***********************************************************************
     CAN node (expansion board, e.g. BTT EBB42):
@@ -25,6 +26,8 @@
              the safe duty while the hub or LinuxCNC is gone
     RGB      WS2812 LED chains (timer + DMA, canIoRgb*), segment colours from
              RGB, off while the hub or LinuxCNC is gone
+    accel    ADXL345 accelerometer on SPI (NodeAdxl345), the average of its
+             samples every ms in ACCEL, its status in EMCY
 ************************************************************************/
 
 #include "drivers/rgb/rgbColor.h"
@@ -158,6 +161,13 @@ class CanNode
         bool        rgbSafe;        // safe state of the last transfer
         uint32_t    rgbFrames;      // RGB frames since the configuration (debug)
 
+        // accelerometer, module accelModule
+        NodeAdxl345 accel;
+        uint8_t     accelModule;
+        uint32_t    lastAccel;      // ms, last ACCEL frame
+        uint32_t    lastAccelEmcy;
+        uint32_t    accelFrames;    // ACCEL frames since the configuration (debug)
+
         bool sendLssReply(void);
         void sendHeartbeat(void);
         void sendConfigReply(uint8_t cmd, uint8_t index, uint8_t status, uint8_t detail);
@@ -174,6 +184,8 @@ class CanNode
         void writePwm(void);
         void handleRgb(const canFrame_t& frame);
         void serviceRgb(void);
+        bool sendAccelStatus(void);
+        void serviceAccel(void);
         void setJointEnable(canNodeJoint_t& j, bool enabled);
         void stopJoints(void);
         uint8_t checkModule(const canFrame_t& frame, canNodeModule_t& m);
@@ -219,6 +231,8 @@ class CanNode
         uint8_t getRgbChainCount(void) { return this->rgbChainCount; }
         uint32_t getRgbColor(int i) { return this->rgbSeg[i].color; }
         uint32_t getRgbFrames(void) { return this->rgbFrames; }
+        NodeAdxl345& getAccel(void) { return this->accel; }
+        uint32_t getAccelFrames(void) { return this->accelFrames; }
 };
 
 #endif

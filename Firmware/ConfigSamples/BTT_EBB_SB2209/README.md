@@ -10,7 +10,8 @@ file lists what is different: the pins. Protocol:
 
 Supported on the node: Digital Pin (inputs and outputs), Stepgen (a LinuxCNC
 joint, e.g. the extruder motor), TMC2209 (the onboard driver over its UART),
-Temperature (thermistors) and PWM (fans, heater).
+Temperature (thermistors), PWM (fans, heater), RGB (the Stealthburner LEDs)
+and ADXL345 (the accelerometer, `../BTT_EBB42/README.md`).
 
 ## Board facts
 
@@ -40,8 +41,8 @@ Remora writes the pins as `PD_0`; `PD0` is accepted too.
 | Probe (NPN / PNP by jumper) | PC13 (pull up) | Digital Pin input |
 | BLTouch sensor / control | PB8 / PB9 | Digital Pin |
 | IO header | PB5, PB6, PB7 | Digital Pin |
-| RGB (neopixel) | PD3 | not supported |
-| ADXL345 | CS PB12, SPI2 PB2 / PB11 / PB10 | not supported |
+| RGB (neopixel) | PD3 | RGB |
+| ADXL345 | CS PB12, SPI2 MISO PB2 / MOSI PB11 / SCK PB10 | ADXL345 |
 | PT100 / PT1000 (MAX31865) | CS PA4, SPI1 | not supported (only NTC thermistors) |
 
 Reserved and rejected by the node: PB0 / PB1 (CAN), PA11 / PA12 (USB).

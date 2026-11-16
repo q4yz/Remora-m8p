@@ -5,11 +5,12 @@ Expansion board for the Manta M8P hub, see
 The BTT EBB SB2209 CAN runs the same firmware, its pins:
 `../BTT_EBB_SB2209/README.md`.
 
-**State: phase 2 + joints + TMC2209 + temperature + PWM.** The node joins
-the bus, gets its node number and its modules from the hub. Supported on the
-node: Digital Pin (inputs and outputs), Stepgen (a LinuxCNC joint, e.g. the
-extruder motor), TMC2209 (its driver over the UART), Temperature (thermistor)
-and PWM (fans, heater).
+**State: phase 2 + joints + TMC2209 + temperature + PWM + RGB +
+accelerometer.** The node joins the bus, gets its node number and its modules
+from the hub. Supported on the node: Digital Pin (inputs and outputs), Stepgen
+(a LinuxCNC joint, e.g. the extruder motor), TMC2209 (its driver over the
+UART), Temperature (thermistor), PWM (fans, heater), RGB (WS2812 chains) and
+ADXL345 (the accelerometer).
 
 ## Board facts
 
@@ -23,7 +24,7 @@ and PWM (fans, heater).
 Pins for the next phases (Klipper sample config v1.2): extruder step PD0 /
 dir PD1 / enable PD2 (active low), TMC2209 UART PA15, heater PB13,
 thermistor PA3, part fan PA0, hotend fan PA1, RGB PD3, probe PB8 / PB9,
-endstops PB4 / PB3.
+endstops PB4 / PB3, ADXL345 CS PB12 / SCK PB10 / MOSI PB11 / MISO PB2.
 
 ## Build and flash
 
@@ -182,6 +183,29 @@ default, `"Period us"` 1000 or more); `"PWM Max"` 1 ... 255 limits the range
 (e.g. 128 for a 12 V fan on the 24 V supply). `"Safe Duty"` runs while
 LinuxCNC or the hub is gone: 100 keeps the hotend fan on, so the heat break
 stays cool. The SP must not be used by a module of the M8P.
+
+## Accelerometer (ADXL345)
+
+The onboard ADXL345 (SPI2: CS PB12, SCK PB10, MOSI PB11, MISO PB2, the same on
+the SB2209) as LinuxCNC process variables, in mm/s², one value per ms:
+
+```json
+{ "Type": "ADXL345", "Comment": "toolhead accelerometer",
+  "X PV[i]": 3, "Y PV[i]": 4, "Z PV[i]": 5 }
+```
+
+The pins are the default, `"Axes Map"` (`"x,y,z"`, e.g. `"-y,x,z"` for a
+turned sensor, like Klipper), `"Range"` (16 g) and `"Rate"` (3200 Hz) are
+optional. Leave out the PV of an axis you do not need: the LinuxCNC frame has
+only 6 PVs. In HAL `remora.PV.3` ... `remora.PV.5`; at rest Z shows about
+9807 (1 g). The boot summary on the M8P console shows the sensor:
+
+```
+           ADXL345 PB_12 ok, 12 -40 9790 mm/s^2
+```
+
+`NOT FOUND`: the sensor does not answer (pins, the sensor not fitted); the node
+keeps trying every second. Details: `CAN_PROTOCOL.md`, "Accelerometer".
 
 ## E-stop when the node is missing
 
