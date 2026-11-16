@@ -10,6 +10,8 @@
 #include "canProtocol.h"
 #include "hal/analogin_api.h"
 #include "hal/pinmap.h"
+#include "hal/spi_api.h"
+#include <string.h>
 #include "PeripheralPins.h"
 #ifdef REMORA_HAS_LED_CHAIN
 #include "drivers/rgb/ledChain.h"
@@ -238,5 +240,67 @@ bool canIoRgbConfigure(uint8_t, int, int) { return false; }
 bool canIoRgbSend(uint8_t, const uint8_t*) { return false; }
 void canIoRgbRelease(uint8_t) {}
 #endif
+
+
+// SPI master for the accelerometer: mbed's SPI HAL on the peripheral the pins belong to (the
+// pin byte is the PinName); chip select is a GPIO of the caller
+#if DEVICE_SPI
+static spi_t spiObj;
+static bool spiOn = false;
+static uint8_t spiPins[3];
+
+
+bool canIoSpiCapable(uint8_t sck, uint8_t mosi, uint8_t miso)
+{
+    if (!canIoPinExists(sck) || !canIoPinExists(mosi) || !canIoPinExists(miso)) return false;
+    // pinmap_find_peripheral: NC instead of the mbed error (a halt) of spi_init on a mismatch
+    uint32_t s = pinmap_find_peripheral((PinName)sck, PinMap_SPI_SCLK);
+    uint32_t o = pinmap_find_peripheral((PinName)mosi, PinMap_SPI_MOSI);
+    uint32_t i = pinmap_find_peripheral((PinName)miso, PinMap_SPI_MISO);
+    return s != (uint32_t)NC && s == o && s == i;
+}
+
+
+bool canIoSpiStart(uint8_t sck, uint8_t mosi, uint8_t miso, uint32_t hz, int mode)
+{
+    canIoSpiStop();
+    if (!canIoSpiCapable(sck, mosi, miso)) return false;
+    spi_init(&spiObj, (PinName)mosi, (PinName)miso, (PinName)sck, NC);
+    spi_format(&spiObj, 8, mode, 0);
+    spi_frequency(&spiObj, (int)hz);
+    spiPins[0] = sck;
+    spiPins[1] = mosi;
+    spiPins[2] = miso;
+    spiOn = true;
+    return true;
+}
+
+
+void canIoSpiTransfer(const uint8_t* tx, uint8_t* rx, int len)
+{
+    if (!spiOn) return;
+    spi_master_block_write(&spiObj, (const char*)tx, len, (char*)rx, len, 0);
+}
+
+
+void canIoSpiStop()
+{
+    if (!spiOn) return;
+    spi_free(&spiObj);
+    spiOn = false;
+    for (int k = 0; k < 3; k++) canIoRelease(spiPins[k]);
+}
+#else
+bool canIoSpiCapable(uint8_t, uint8_t, uint8_t) { return false; }
+bool canIoSpiStart(uint8_t, uint8_t, uint8_t, uint32_t, int) { return false; }
+void canIoSpiTransfer(const uint8_t*, uint8_t* rx, int len) { memset(rx, 0, len); }
+void canIoSpiStop() {}
+#endif
+
+
+void canIoDelayUs(uint32_t us)
+{
+    wait_us((int)us);
+}
 
 #endif

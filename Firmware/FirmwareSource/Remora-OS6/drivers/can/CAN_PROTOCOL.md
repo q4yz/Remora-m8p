@@ -23,6 +23,7 @@ could disturb the base thread).
 | `0x300 + n` | PWM (duties) | hub → node | PWM |
 | `0x380 + n` | ANALOG (ADC readings) | node → hub | temperature |
 | `0x400 + n` | RGB (LED colours) | hub → node | RGB |
+| `0x480 + n` | ACCEL (accelerometer) | node → hub | ADXL345 |
 | `0x580 + n` | CONFIG REPLY | node → hub | 2 |
 | `0x600 + n` | CONFIG | hub → node | 2 |
 | `0x700 + n` | HEARTBEAT | node → hub | 1 |
@@ -121,6 +122,8 @@ Module types (pins as `port << 4 | number`, port 0 = A, `0xFF` none):
   (0: no W, 1 ... 4: W as byte 1 ... 4), e.g. GRB = 2, GRBW = 26
   (`drivers/rgb/rgbColor.h`). The segments on one pin are one chain (same
   colour order), up to 2 chains.
+- `0x07` ADXL345 accelerometer, data: CS pin, flags (range, rate), SCK pin,
+  MOSI pin, MISO pin (see below).
 
 ## Process data (phase 3)
 
@@ -329,6 +332,63 @@ sent off).
   B of segments k and k + 1. On a change at most every 20 ms, and every 1 s.
 - Off after the configuration until LinuxCNC is there, while LinuxCNC is
   gone (COMMAND safe flag) and in state SAFE.
+
+## Accelerometer (ADXL345)
+
+An `"ADXL345"` module in a node entry: the accelerometer of the EBB42 /
+SB2209 (SPI2: CS PB12, SCK PB10, MOSI PB11, MISO PB2, the default pins) as
+up to three LinuxCNC process variables, e.g. for measuring resonances:
+
+```json
+{ "Type": "ADXL345", "Comment": "toolhead accelerometer",
+  "X PV[i]": 3, "Y PV[i]": 4, "Z PV[i]": 5,
+  "Axes Map": "x,y,z", "Range": 16, "Rate": 3200 }
+```
+
+- `"X PV[i]"`, `"Y PV[i]"`, `"Z PV[i]"`: the process variable of each machine
+  axis, -1 or left out: that axis is not sent (the frame has only 6 PVs, e.g.
+  `"X PV[i]"` and `"Y PV[i]"` for the input shaper of a CoreXY). At least one;
+  they must not be used by a module of the hub or another node.
+- `"Axes Map"`: the sensor axis of the machine's X, Y and Z, like Klipper's
+  `axes_map`, e.g. `"-y,x,z"` for a sensor turned by 90°. Default `"x,y,z"`.
+- `"Range"` ±2, 4, 8 or 16 g (default 16), always full resolution
+  (3.9 mg per count); `"Rate"` the sensor's output data rate, 100, 200, 400,
+  800, 1600 or 3200 Hz (default 3200).
+- `"CS Pin"`, `"SCK Pin"`, `"MOSI Pin"`, `"MISO Pin"`: other wiring, the
+  three SPI pins must belong to one SPI of the node MCU (else
+  `CFG_ERR_NOT_SPI`). One accelerometer per node.
+
+The values are mm/s² (as LinuxCNC's accelerations; 1 g = 9806.65 mm/s²), the
+Z axis shows about 9807 at rest. 0 while the node is lost, not configured or
+the sensor does not answer.
+
+- The node reads the sensor's FIFO (stream mode, 32 samples) once per ms in
+  its main loop, at 4 MHz SPI mode 3, and sends the average of the new
+  samples (3.2 at 3200 Hz: a box filter against aliasing) in ACCEL
+  `0x480 + n`: X, Y, Z int16 little endian in sensor counts, byte 6 the
+  samples averaged, byte 7 flags (bit 0: the FIFO ran over, samples lost).
+  Only when there are new samples: at 3200 / 1600 Hz every ms, at 400 Hz 400
+  frames a second.
+- The hub maps the axes, scales to mm/s² and writes the process variables in
+  its main loop; LinuxCNC reads them every servo period. Node and LinuxCNC
+  clocks are not synchronised: a sample is now and then seen twice or not at
+  all. Fine for resonance frequencies up to a few hundred Hz, not a
+  replacement for Klipper's timestamped 3200 Hz capture.
+- Bus load: about 13 % at 1 Mbit/s (one frame per ms), on top of a node's
+  joints (26 %).
+- The node checks the device ID (`0xE5`) at the start and every second, and a
+  FIFO count over 32 (MISO not driven) at once. A missing sensor is reported
+  in EMCY (byte 0 `0x02`, 1 module index, 2 status 0 not configured / 1 ok /
+  2 not found, 3 device ID read), shown in the hub's boot summary and on
+  changes, and set up again when it answers:
+
+  ```
+             ADXL345 PB_12 ok, 12 -40 9790 mm/s^2
+  ```
+
+Module record: `0x07`, data: CS pin, flags (bits 0-1 range 2 / 4 / 8 / 16 g,
+bits 4-7 the ADXL345 BW_RATE code `0x0A` 100 Hz ... `0x0F` 3200 Hz), SCK pin,
+MOSI pin, MISO pin.
 
 ## Next phases
 

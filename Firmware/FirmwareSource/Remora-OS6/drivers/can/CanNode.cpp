@@ -39,7 +39,11 @@ CanNode::CanNode(CanBus* can, uint32_t baseFreq) :
     rgbChainCount(0),
     rgbCount(0),
     rgbSafe(true),
-    rgbFrames(0)
+    rgbFrames(0),
+    accelModule(0),
+    lastAccel(0),
+    lastAccelEmcy(0),
+    accelFrames(0)
 {
     memset(this->joints, 0, sizeof(this->joints));
     memset(this->pwm, 0, sizeof(this->pwm));
@@ -159,9 +163,17 @@ void CanNode::handleLss(const canFrame_t& frame)
 ************************************************************************/
 
 // the pins a module uses
-static int modulePins(const canNodeModule_t& m, uint8_t pins[3])
+#define MODULE_PINS_MAX     4
+static int modulePins(const canNodeModule_t& m, uint8_t pins[MODULE_PINS_MAX])
 {
     pins[0] = m.pin;
+    if (m.type == MODULE_ACCEL)
+    {
+        pins[1] = m.bit;                    // SCK
+        pins[2] = m.dirPin;                 // MOSI
+        pins[3] = m.enablePin;              // MISO
+        return 4;
+    }
     if (m.type != MODULE_STEPGEN) return 1;
     pins[1] = m.dirPin;
     if (m.enablePin == CAN_PIN_NONE) return 2;
@@ -237,9 +249,20 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
         }
         if (!known && chains >= CAN_NODE_RGB_CHAINS) return CFG_ERR_FULL;
     }
+    else if (m.type == MODULE_ACCEL)
+    {
+        // CS, flags, SCK, MOSI, MISO; one per node
+        uint8_t rate = (uint8_t)(m.flags >> ACCEL_RATE_SHIFT);
+        if (rate < ACCEL_RATE_MIN || rate > ACCEL_RATE_MAX || (m.flags & 0x0C)) return CFG_ERR_VALUE;
+        for (int i = 0; i < this->pendingCount; i++) if (this->pending[i].type == MODULE_ACCEL) return CFG_ERR_FULL;
+        const uint8_t spiPins[3] = { m.bit, m.dirPin, m.enablePin };
+        bool pinsOk = true;
+        for (int k = 0; k < 3; k++) pinsOk &= canIoPinExists(spiPins[k]) && !canIoPinReserved(spiPins[k]);
+        if (pinsOk && !canIoSpiCapable(m.bit, m.dirPin, m.enablePin)) return CFG_ERR_NOT_SPI;
+    }
     else return CFG_ERR_TYPE;
 
-    uint8_t pins[3], used[3];
+    uint8_t pins[MODULE_PINS_MAX], used[MODULE_PINS_MAX];
     int count = modulePins(m, pins);
     for (int k = 0; k < count; k++)
     {
@@ -258,7 +281,7 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
         {
             for (int l = 0; l < n; l++) if (used[l] == pins[k]) { m.pin = pins[k]; return CFG_ERR_PIN_USED; }
         }
-        if (p.type != m.type || p.bit != m.bit || m.type == MODULE_TMC2209) continue;
+        if (p.type != m.type || p.bit != m.bit || m.type == MODULE_TMC2209 || m.type == MODULE_ACCEL) continue;
         if (m.type == MODULE_STEPGEN) return CFG_ERR_JOINT;
         if (m.type == MODULE_ANALOG_IN || m.type == MODULE_PWM || m.type == MODULE_RGB) return CFG_ERR_VALUE;
         if ((p.flags & DPIN_OUTPUT) == (m.flags & DPIN_OUTPUT)) return CFG_ERR_BIT;
@@ -348,6 +371,13 @@ void CanNode::handleConfig(const canFrame_t& frame)
                        canPinName(m.pin, name), m.dirPin + 1, m.dirPin + m.enablePin,
                        rgbOrderName(m.flags, orderName));
             }
+            else if (m.type == MODULE_ACCEL)
+            {
+                char sck[6], mosi[6], miso[6];
+                printf("CONFIG: module %d: ADXL345 CS %s, SCK %s, MOSI %s, MISO %s, +-%d g, rate code 0x%x\n",
+                       c.index + 1, canPinName(m.pin, name), canPinName(m.bit, sck), canPinName(m.dirPin, mosi),
+                       canPinName(m.enablePin, miso), 2 << (m.flags & ACCEL_RANGE_MASK), m.flags >> ACCEL_RATE_SHIFT);
+            }
             else if (m.type == MODULE_TMC2209)
             {
                 printf("CONFIG: module %d: TMC2209 UART %s, address %d, %d mA, %d microsteps, %s, stall %d\n",
@@ -410,6 +440,18 @@ void CanNode::applyConfig()
     for (int i = 0; i < this->moduleCount; i++)
     {
         const canNodeModule_t& m = this->modules[i];
+        if (m.type == MODULE_ACCEL)
+        {
+            this->accel.setup(m.pin, m.bit, m.dirPin, m.enablePin, m.flags);
+            this->accelModule = (uint8_t)i;
+            if (!this->accel.start(this->now)) printf("ADXL345: no SPI on its pins\n");
+            else printf("ADXL345: %s, device ID 0x%02x\n", accelStatusText(this->accel.getStatus()),
+                        this->accel.getDeviceId());
+            this->lastAccel = this->now;
+            this->lastAccelEmcy = this->now - CAN_EMCY_REPEAT_MS;      // status right away
+            this->accelFrames = 0;
+            continue;
+        }
         if (m.type == MODULE_RGB)
         {
             int c = 0;
@@ -544,8 +586,9 @@ void CanNode::releaseModules()
     for (int c = 0; c < this->rgbChainCount; c++) canIoRgbRelease(this->rgbChain[c].pin);
     this->rgbChainCount = 0;
     this->rgbCount = 0;
+    this->accel.stop();
 
-    uint8_t pins[3];
+    uint8_t pins[MODULE_PINS_MAX];
     for (int i = 0; i < this->moduleCount; i++)
     {
         int n = modulePins(this->modules[i], pins);
@@ -884,6 +927,60 @@ void CanNode::serviceAnalog()
 }
 
 
+/***********************************************************************
+    Accelerometer
+************************************************************************/
+
+bool CanNode::sendAccelStatus()
+{
+    canFrame_t f;
+    f.id = CAN_ID_EMCY + this->node;
+    f.extended = false;
+    f.len = 4;
+    f.data[0] = EMCY_ACCEL;
+    f.data[1] = this->accelModule;
+    f.data[2] = this->accel.getStatus();
+    f.data[3] = this->accel.getDeviceId();
+    return this->can->send(f);
+}
+
+
+void CanNode::serviceAccel()
+{
+    if (!this->accel.isActive()) return;
+
+    bool changed = this->accel.service(this->now);
+    if (changed)
+    {
+        printf("ADXL345: %s, device ID 0x%02x\n", accelStatusText(this->accel.getStatus()), this->accel.getDeviceId());
+    }
+    if ((changed || (this->now - this->lastAccelEmcy) >= CAN_EMCY_REPEAT_MS) && this->sendAccelStatus())
+    {
+        this->lastAccelEmcy = this->now;
+    }
+
+    // the average of the new samples, every CAN_ACCEL_MS; nothing new (low rate): no frame
+    if ((this->now - this->lastAccel) < CAN_ACCEL_MS) return;
+    int16_t xyz[3];
+    uint8_t count, flags;
+    if (!this->accel.take(xyz, &count, &flags)) return;
+    this->lastAccel = this->now;
+
+    canFrame_t f;
+    f.id = CAN_ID_ACCEL + this->node;
+    f.extended = false;
+    f.len = 8;
+    for (int a = 0; a < 3; a++)
+    {
+        f.data[2 * a] = (uint8_t)xyz[a];
+        f.data[2 * a + 1] = (uint8_t)((uint16_t)xyz[a] >> 8);
+    }
+    f.data[6] = count;
+    f.data[7] = flags;
+    if (this->can->send(f)) this->accelFrames++;      // TX queue full: this one is lost, the next follows in a ms
+}
+
+
 void CanNode::baseTick()
 {
     for (int i = 0; i < this->tmcCount; i++) this->tmc[i].tick();
@@ -992,6 +1089,7 @@ void CanNode::service(uint32_t now)
         this->serviceTmc();
         this->serviceAnalog();
         this->serviceRgb();
+        this->serviceAccel();
 
         // TX queue full (nobody acknowledges): try again in the next ms, not on every loop pass
         uint16_t in = this->readInputs();

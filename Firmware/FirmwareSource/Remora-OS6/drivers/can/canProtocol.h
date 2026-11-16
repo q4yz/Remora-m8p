@@ -17,6 +17,7 @@
         0x300 + node    PWM             hub  -> node    PWM duties (fans, heaters)
         0x380 + node    ANALOG          node -> hub     ADC readings (thermistors), every 100 ms
         0x400 + node    RGB             hub  -> node    LED segment colours (WS2812 chains)
+        0x480 + node    ACCEL           node -> hub     accelerometer (ADXL345), every ms
         0x580 + node    CONFIG REPLY    node -> hub     configuration transfer (phase 2)
         0x600 + node    CONFIG          hub  -> node    configuration transfer (phase 2)
         0x700 + node    HEARTBEAT       node -> hub     node alive, state
@@ -31,7 +32,8 @@
 
 #include <stdint.h>
 
-#define CAN_PROTOCOL_VERSION    7           // 2: config and digital I/O, 3: joints, 4: TMC2209, 5: analog, 6: PWM, 7: RGB
+#define CAN_PROTOCOL_VERSION    8           // 2: config and digital I/O, 3: joints, 4: TMC2209, 5: analog, 6: PWM, 7: RGB,
+                                            // 8: accelerometer
 
 #define CAN_NODE_MAX            15          // node numbers 1 ... 15
 
@@ -45,6 +47,7 @@
 #define CAN_ID_PWM              0x300       // + node
 #define CAN_ID_ANALOG           0x380       // + node
 #define CAN_ID_RGB              0x400       // + node
+#define CAN_ID_ACCEL            0x480       // + node
 #define CAN_ID_CONFIG_REPLY     0x580       // + node
 #define CAN_ID_CONFIG           0x600       // + node
 #define CAN_ID_HEARTBEAT        0x700       // + node
@@ -88,6 +91,7 @@
 #define CFG_ERR_VALUE           10          // module setting out of range (e.g. TMC2209 microsteps)
 #define CFG_ERR_NOT_ANALOG      11          // analog input on a pin without ADC
 #define CFG_ERR_NOT_RGB         12          // LED chain on a pin without a free timer channel / DMA
+#define CFG_ERR_NOT_SPI         13          // accelerometer: SCK, MOSI, MISO are not the pins of one SPI
 
 #define CAN_MODULES_MAX         16          // modules per node
 #define CAN_CONFIG_REPLY_MS     50          // hub: resend a config frame without reply after this
@@ -101,6 +105,7 @@
 #define MODULE_ANALOG_IN        0x04        // data: ADC pin, 0, local analog index, 0, 0
 #define MODULE_PWM              0x05        // data: pin, safe duty %, local PWM index, period in base ticks (16 bit)
 #define MODULE_RGB              0x06        // data: pin, colour order (rgbColor.h), local segment, first LED (0 ...), LEDs
+#define MODULE_ACCEL            0x07        // data: CS pin, ACCEL_* flags, SCK pin, MOSI pin, MISO pin
 
 // PWM outputs: software PWM in the node base thread, one period = period base ticks
 // (CAN_NODE_BASE_FREQ). PWM frame hub -> node: per local output i a 16-bit duty,
@@ -123,6 +128,20 @@
 #define CAN_RGB_MIN_MS          20
 #define CAN_RGB_REFRESH_MS      1000
 
+// accelerometer (ADXL345 on SPI, one per node): the node reads the sensor's FIFO in its main loop
+// and sends, every CAN_ACCEL_MS with new samples, their average in ACCEL: X, Y, Z as int16 little
+// endian in the sensor's full resolution counts (ACCEL_G_PER_COUNT), byte 6 the samples averaged
+// (up to 255), byte 7 ACCEL_FRAME_* flags. The hub maps the axes and writes mm/s^2 into the
+// LinuxCNC process variables. Flags of the module: bits 0-1 range (2, 4, 8, 16 g), bits 4-7 the
+// output data rate as the ADXL345 BW_RATE code (0x0A 100 Hz ... 0x0F 3200 Hz)
+#define ACCEL_RANGE_MASK        0x03        // 0: +-2 g ... 3: +-16 g
+#define ACCEL_RATE_SHIFT        4
+#define ACCEL_RATE_MIN          0x0A        // 100 Hz
+#define ACCEL_RATE_MAX          0x0F        // 3200 Hz
+#define ACCEL_G_PER_COUNT       0.0039f     // full resolution: 3.9 mg per count in every range
+#define ACCEL_FRAME_OVERRUN     0x01        // the sensor's FIFO was full: samples lost since the last frame
+#define CAN_ACCEL_MS            1
+
 // analog inputs: the node averages its ADC readings and sends them raw in ANALOG, byte 2i / 2i + 1
 // local input i, 0 ... 65535, little endian; the hub turns them into temperatures (thermistor)
 #define CAN_NODE_ANALOG         4           // analog inputs per node, fits one 8 byte frame
@@ -140,6 +159,12 @@
 //   EMCY_TMC   byte 1 module index (0 ...), 2 status (TMC_STATUS_* in NodeTmc2209.h),
 //              3 driver version (0x21), on a change and every CAN_EMCY_REPEAT_MS
 #define EMCY_TMC                0x01
+// EMCY_ACCEL byte 1 module index, 2 status (ACCEL_STATUS_*), 3 the device ID read (ADXL345: 0xE5),
+//            on a change and every CAN_EMCY_REPEAT_MS
+#define EMCY_ACCEL              0x02
+#define ACCEL_STATUS_NONE       0           // not configured yet
+#define ACCEL_STATUS_OK         1           // running
+#define ACCEL_STATUS_MISSING    2           // wrong or no device ID: not connected, retried every second
 #define CAN_EMCY_REPEAT_MS      1000
 
 #define CAN_PIN_NONE            0xFF        // e.g. a stepgen without enable pin
@@ -302,6 +327,17 @@ static inline uint16_t canConfigChecksum(uint16_t sum, const uint8_t record[6])
     return sum;
 }
 
+static inline const char* accelStatusText(uint8_t status)
+{
+    switch (status)
+    {
+        case ACCEL_STATUS_NONE:     return "not configured yet";
+        case ACCEL_STATUS_OK:       return "ok";
+        case ACCEL_STATUS_MISSING:  return "NOT FOUND (wiring, CS / SPI pins?)";
+    }
+    return "?";
+}
+
 static inline const char* canConfigError(uint8_t status)
 {
     switch (status)
@@ -319,6 +355,7 @@ static inline const char* canConfigError(uint8_t status)
         case CFG_ERR_VALUE:     return "setting out of range";
         case CFG_ERR_NOT_ANALOG: return "pin has no ADC input";
         case CFG_ERR_NOT_RGB:   return "pin is no free timer channel for an LED chain";
+        case CFG_ERR_NOT_SPI:   return "SCK, MOSI and MISO are not the pins of one SPI";
     }
     return "?";
 }

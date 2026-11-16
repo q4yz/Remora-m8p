@@ -513,6 +513,13 @@ void configCan()
                     canHub->addRgb(number, pin, seg["SP[i]"] | -1, seg["First"] | 1, seg["Count"] | 1, leds, order);
                 }
             }
+            else if (!strcmp(type, "ADXL345"))
+            {
+                // accelerometer, SPI pins default to the EBB42 / SB2209 ones; mm/s^2 into the PVs
+                canHub->addAdxl345(number, m["CS Pin"] | "", m["SCK Pin"] | "", m["MOSI Pin"] | "",
+                                   m["MISO Pin"] | "", m["X PV[i]"] | -1, m["Y PV[i]"] | -1, m["Z PV[i]"] | -1,
+                                   m["Axes Map"] | "x,y,z", m["Range"] | 16, m["Rate"] | 3200);
+            }
             else if (!strcmp(type, "TMC2209"))
             {
                 canHub->addTmc2209(number, m["RX pin"] | "", m["RSense"] | 0.11f, m["Address"] | 0, m["Current"] | 0,
