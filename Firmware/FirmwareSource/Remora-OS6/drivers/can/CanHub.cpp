@@ -489,6 +489,7 @@ void CanHub::writeVariables(volatile float* pv)
         if (!n->hasAccel) continue;
         ok = n->alive && n->cfgState == CFG_STATE_DONE && n->accelValid && n->accelStatus == ACCEL_STATUS_OK;
         for (int a = 0; a < 3; a++) if (n->accelPv[a] >= 0) pv[n->accelPv[a]] = ok ? n->accel[a] : 0.0f;
+        if (n->hasImpact && n->impactPeakPv >= 0) pv[n->impactPeakPv] = ok ? n->impactPeak : 0.0f;
     }
 }
 
@@ -562,14 +563,12 @@ bool CanHub::addAdxl345(int node, const char* csName, const char* sckName, const
         }
     }
 
-    // process variables, at least one axis
+    // process variables, none for impact detection only
     int pv[3] = { pvX, pvY, pvZ };
     uint8_t used = 0;
-    bool any = false;
     for (int a = 0; a < 3; a++)
     {
         if (pv[a] < 0) continue;
-        any = true;
         if (pv[a] >= CAN_HUB_VARIABLES)
         {
             printf("CAN: node %d: ADXL345, %c PV[i] %d out of range 0 ... %d\n", node, 'X' + a, pv[a],
@@ -582,11 +581,6 @@ bool CanHub::addAdxl345(int node, const char* csName, const char* sckName, const
             return false;
         }
         used |= (uint8_t)(1u << pv[a]);
-    }
-    if (!any)
-    {
-        printf("CAN: node %d: ADXL345 without \"X PV[i]\", \"Y PV[i]\" or \"Z PV[i]\"\n", node);
-        return false;
     }
 
     uint8_t axis[3];
@@ -630,6 +624,7 @@ bool CanHub::addAdxl345(int node, const char* csName, const char* sckName, const
     }
     n->accelValid = false;
     n->accelStatus = ACCEL_STATUS_NONE;
+    n->accelRate = (uint16_t)rate;
     this->usedVariables |= used;
 
     uint8_t* m = n->modules[n->moduleCount++];
@@ -651,6 +646,102 @@ bool CanHub::addAdxl345(int node, const char* csName, const char* sckName, const
 }
 
 
+bool CanHub::addImpact(int node, int dataBit, float threshold, int holdMs, int cutoffHz, int peakPv)
+{
+    canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
+
+    if (!n || !n->hasAccel)
+    {
+        printf("CAN: node %d: impact detection needs the node's ADXL345 module\n", node);
+        return false;
+    }
+    if (n->hasImpact)
+    {
+        printf("CAN: node %d: impact detection twice\n", node);
+        return false;
+    }
+    if (n->moduleCount >= CAN_MODULES_MAX)
+    {
+        printf("CAN: node %d: more than %d modules\n", node, CAN_MODULES_MAX);
+        return false;
+    }
+    if (dataBit < 0 || dataBit > 15)
+    {
+        printf("CAN: node %d: \"Impact Bit\" %d out of range 0 ... 15\n", node, dataBit);
+        return false;
+    }
+    uint16_t bit = (uint16_t)(1u << dataBit);
+    if (this->usedInputs & bit)
+    {
+        printf("CAN: node %d: \"Impact Bit\" %d, input bit already used\n", node, dataBit);
+        return false;
+    }
+    int units = (int)lrintf(threshold / IMPACT_G_UNIT);
+    if (units < 1 || units > 255)
+    {
+        printf("CAN: node %d: \"Impact Threshold\" %d.%d g, 0.1 ... 25.5\n", node, (int)threshold,
+               (int)(threshold * 10.0f) % 10);
+        return false;
+    }
+    int hold = (holdMs + IMPACT_HOLD_UNIT_MS - 1) / IMPACT_HOLD_UNIT_MS;
+    if (hold < 1 || hold > 255)
+    {
+        printf("CAN: node %d: \"Impact Hold ms\" %d, 10 ... 2550\n", node, holdMs);
+        return false;
+    }
+    int cutoff = cutoffHz / IMPACT_CUTOFF_UNIT_HZ;
+    if (cutoff < IMPACT_CUTOFF_MIN || cutoff > 255 || cutoffHz * 10 >= n->accelRate * 4)
+    {
+        printf("CAN: node %d: \"Impact Cutoff Hz\" %d, %d ... %d (0.4 x the \"Rate\" %d Hz)\n", node, cutoffHz,
+               IMPACT_CUTOFF_MIN * IMPACT_CUTOFF_UNIT_HZ, n->accelRate * 4 / 10 - 1, n->accelRate);
+        return false;
+    }
+    if (peakPv >= CAN_HUB_VARIABLES || (peakPv >= 0 && (this->usedVariables & (1u << peakPv))))
+    {
+        printf("CAN: node %d: \"Impact Peak PV[i]\" %d out of range or already used\n", node, peakPv);
+        return false;
+    }
+
+    // a node local input bit like a Digital Pin input, 0 while the node is lost (the status bit E-stops)
+    uint8_t local = n->inCount;
+    n->inBit[n->inCount++] = (uint8_t)dataBit;
+    n->inMask |= bit;
+    n->inValues = n->inLost;
+    this->usedInputs |= bit;
+    if (peakPv >= 0) this->usedVariables |= (uint8_t)(1u << peakPv);
+
+    n->hasImpact = true;
+    n->impactModule = n->moduleCount;
+    n->impactBit = (uint8_t)dataBit;
+    n->impactThreshold = units * IMPACT_G_UNIT;
+    n->impactPeakPv = (int8_t)(peakPv < 0 ? -1 : peakPv);
+    n->impactPeak = 0.0f;
+    n->impactCount = 0;
+
+    uint8_t* m = n->modules[n->moduleCount++];
+    m[0] = MODULE_IMPACT;
+    m[1] = CAN_PIN_NONE;
+    m[2] = (uint8_t)units;
+    m[3] = local;
+    m[4] = (uint8_t)hold;
+    m[5] = (uint8_t)cutoff;
+
+    printf("CAN: node %d module %d: impact detection, LinuxCNC input bit %d, %d.%d g above %d Hz, hold %d ms",
+           node, n->moduleCount, dataBit, units / 10, units % 10, cutoff * IMPACT_CUTOFF_UNIT_HZ,
+           hold * IMPACT_HOLD_UNIT_MS);
+    if (peakPv >= 0) printf(", peak in PV[%d]", peakPv);
+    printf("\n");
+    return true;
+}
+
+
+uint16_t CanHub::getImpactCount(int node)
+{
+    canNodeEntry_t* n = (node >= 1 && node <= CAN_NODE_MAX) ? this->findNode((uint8_t)node) : nullptr;
+    return (n && n->hasImpact) ? n->impactCount : 0;
+}
+
+
 void CanHub::handleAccel(const canFrame_t& frame)
 {
     canNodeEntry_t* n = this->findNode((uint8_t)(frame.id - CAN_ID_ACCEL));
@@ -660,6 +751,7 @@ void CanHub::handleAccel(const canFrame_t& frame)
     for (int a = 0; a < 3; a++) raw[a] = (int16_t)(frame.data[2 * a] | (frame.data[2 * a + 1] << 8));
     static const float scale = ACCEL_G_PER_COUNT * 9806.65f;     // counts -> mm/s^2
     for (int a = 0; a < 3; a++) n->accel[a] = (float)(raw[n->accelAxis[a]] * n->accelSign[a]) * scale;
+    n->impactPeak = frame.data[6] * IMPACT_G_UNIT;
     n->accelValid = true;
     n->accelFrames++;
     if (frame.data[7] & ACCEL_FRAME_OVERRUN) n->accelOverruns++;
@@ -685,6 +777,17 @@ void CanHub::printAccel(const canNodeEntry_t* n)
         printf(", %d %d %d mm/s^2", (int)n->accel[0], (int)n->accel[1], (int)n->accel[2]);
     }
     if (n->accelOverruns) printf(", %lu frame(s) with lost samples", (unsigned long)n->accelOverruns);
+    if (n->hasImpact)
+    {
+        int t = (int)lrintf(n->impactThreshold * 10.0f);
+        printf(", impact bit remora.input.%02d at %d.%d g, %u impact(s)", n->impactBit, t / 10, t % 10,
+               n->impactCount);
+        if (n->impactCount)
+        {
+            int p = (int)lrintf(n->impactLastPeak * 10.0f);
+            printf(", last %d.%d g", p / 10, p % 10);
+        }
+    }
 }
 
 
@@ -968,6 +1071,14 @@ void CanHub::handleEmcy(const canFrame_t& frame)
     if (!n || frame.len < 4) return;
 
     uint8_t i = frame.data[1];
+    if (frame.data[0] == EMCY_IMPACT)
+    {
+        if (!n->hasImpact || i != n->impactModule || frame.len < 6) return;
+        n->impactLastPeak = (uint16_t)(frame.data[2] | (frame.data[3] << 8)) * IMPACT_G_UNIT;
+        n->impactCount = (uint16_t)(frame.data[4] | (frame.data[5] << 8));
+        n->impactReport = true;
+        return;
+    }
     if (frame.data[0] == EMCY_ACCEL)
     {
         if (!n->hasAccel || i != n->accelModule) return;
@@ -1202,6 +1313,8 @@ void CanHub::handleConfigReply(const canFrame_t& frame, uint32_t now)
         n->rgbSent = false;                 // the colours too
         n->accelValid = false;              // accelerations from the next ACCEL frame
         n->accelStatus = ACCEL_STATUS_NONE; // the node reports it
+        n->impactCount = 0;                 // the node counts from 0 again
+        n->impactPeak = 0.0f;
         return;
     }
 
@@ -1543,6 +1656,7 @@ void CanHub::bootReport()
         n->cfgReport = CFG_REPORT_NONE;
         n->tmcReport = 0;
         n->accelReport = false;
+        n->impactReport = false;
     }
 
     for (int i = 0; i < CAN_UNKNOWN_MAX; i++)
@@ -1620,6 +1734,13 @@ void CanHub::report()
             printf("\n");
         }
 
+        if (n->impactReport)
+        {
+            n->impactReport = false;
+            int p = (int)lrintf(n->impactLastPeak * 10.0f);
+            printf("CAN: node %d (%s) IMPACT %u, %d.%d g, LinuxCNC input bit %d\n", n->node, n->comment,
+                   n->impactCount, p / 10, p % 10, n->impactBit);
+        }
         if (n->accelReport)
         {
             n->accelReport = false;

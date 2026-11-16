@@ -516,9 +516,23 @@ void configCan()
             else if (!strcmp(type, "ADXL345"))
             {
                 // accelerometer, SPI pins default to the EBB42 / SB2209 ones; mm/s^2 into the PVs
-                canHub->addAdxl345(number, m["CS Pin"] | "", m["SCK Pin"] | "", m["MOSI Pin"] | "",
-                                   m["MISO Pin"] | "", m["X PV[i]"] | -1, m["Y PV[i]"] | -1, m["Z PV[i]"] | -1,
-                                   m["Axes Map"] | "x,y,z", m["Range"] | 16, m["Rate"] | 3200);
+                bool ok = canHub->addAdxl345(number, m["CS Pin"] | "", m["SCK Pin"] | "", m["MOSI Pin"] | "",
+                                             m["MISO Pin"] | "", m["X PV[i]"] | -1, m["Y PV[i]"] | -1,
+                                             m["Z PV[i]"] | -1, m["Axes Map"] | "x,y,z", m["Range"] | 16,
+                                             m["Rate"] | 3200);
+                // impact detection on the node: an input bit for the E-stop chain
+                if (ok && !m.containsKey("Impact Bit") && (m["X PV[i]"] | -1) < 0 && (m["Y PV[i]"] | -1) < 0 &&
+                    (m["Z PV[i]"] | -1) < 0)
+                {
+                    printf("CAN: node %d: ADXL345 without \"X PV[i]\", \"Y PV[i]\", \"Z PV[i]\" or \"Impact Bit\": "
+                           "nothing reaches LinuxCNC\n", number);
+                }
+                if (ok && m.containsKey("Impact Bit"))
+                {
+                    canHub->addImpact(number, m["Impact Bit"] | -1, m["Impact Threshold"] | 3.0f,
+                                      m["Impact Hold ms"] | 200, m["Impact Cutoff Hz"] | 300,
+                                      m["Impact Peak PV[i]"] | -1);
+                }
             }
             else if (!strcmp(type, "TMC2209"))
             {

@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 CanNode::CanNode(CanBus* can, uint32_t baseFreq) :
     can(can),
@@ -43,7 +44,10 @@ CanNode::CanNode(CanBus* can, uint32_t baseFreq) :
     accelModule(0),
     lastAccel(0),
     lastAccelEmcy(0),
-    accelFrames(0)
+    accelFrames(0),
+    impactOn(false),
+    impactModule(0),
+    impactBit(0)
 {
     memset(this->joints, 0, sizeof(this->joints));
     memset(this->pwm, 0, sizeof(this->pwm));
@@ -174,6 +178,7 @@ static int modulePins(const canNodeModule_t& m, uint8_t pins[MODULE_PINS_MAX])
         pins[3] = m.enablePin;              // MISO
         return 4;
     }
+    if (m.type == MODULE_IMPACT) return 0;  // no pin, the accelerometer's samples
     if (m.type != MODULE_STEPGEN) return 1;
     pins[1] = m.dirPin;
     if (m.enablePin == CAN_PIN_NONE) return 2;
@@ -260,6 +265,21 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
         for (int k = 0; k < 3; k++) pinsOk &= canIoPinExists(spiPins[k]) && !canIoPinReserved(spiPins[k]);
         if (pinsOk && !canIoSpiCapable(m.bit, m.dirPin, m.enablePin)) return CFG_ERR_NOT_SPI;
     }
+    else if (m.type == MODULE_IMPACT)
+    {
+        // threshold, local input bit, hold, cutoff: after the node's accelerometer, one per node
+        const canNodeModule_t* accel = nullptr;
+        for (int i = 0; i < this->pendingCount; i++)
+        {
+            if (this->pending[i].type == MODULE_ACCEL) accel = &this->pending[i];
+            if (this->pending[i].type == MODULE_IMPACT) return CFG_ERR_FULL;
+        }
+        if (!accel) return CFG_ERR_VALUE;
+        if (m.bit > 15) return CFG_ERR_BIT;
+        uint32_t rate = 3200u >> (ACCEL_RATE_MAX - (accel->flags >> ACCEL_RATE_SHIFT));
+        if (m.flags == 0 || m.dirPin == 0 || m.enablePin < IMPACT_CUTOFF_MIN ||
+            (uint32_t)m.enablePin * IMPACT_CUTOFF_UNIT_HZ * 10 >= rate * 4) return CFG_ERR_VALUE;
+    }
     else return CFG_ERR_TYPE;
 
     uint8_t pins[MODULE_PINS_MAX], used[MODULE_PINS_MAX];
@@ -281,7 +301,12 @@ uint8_t CanNode::checkModule(const canFrame_t& frame, canNodeModule_t& m)
         {
             for (int l = 0; l < n; l++) if (used[l] == pins[k]) { m.pin = pins[k]; return CFG_ERR_PIN_USED; }
         }
-        if (p.type != m.type || p.bit != m.bit || m.type == MODULE_TMC2209 || m.type == MODULE_ACCEL) continue;
+        // the impact output is a local input bit like a digital input's
+        bool pInput = (p.type == MODULE_DIGITAL_PIN && !(p.flags & DPIN_OUTPUT)) || p.type == MODULE_IMPACT;
+        bool mInput = (m.type == MODULE_DIGITAL_PIN && !(m.flags & DPIN_OUTPUT)) || m.type == MODULE_IMPACT;
+        if (p.type != m.type && pInput && mInput && p.bit == m.bit) return CFG_ERR_BIT;
+        if (p.type != m.type || p.bit != m.bit || m.type == MODULE_TMC2209 || m.type == MODULE_ACCEL ||
+            m.type == MODULE_IMPACT) continue;
         if (m.type == MODULE_STEPGEN) return CFG_ERR_JOINT;
         if (m.type == MODULE_ANALOG_IN || m.type == MODULE_PWM || m.type == MODULE_RGB) return CFG_ERR_VALUE;
         if ((p.flags & DPIN_OUTPUT) == (m.flags & DPIN_OUTPUT)) return CFG_ERR_BIT;
@@ -378,6 +403,12 @@ void CanNode::handleConfig(const canFrame_t& frame)
                        c.index + 1, canPinName(m.pin, name), canPinName(m.bit, sck), canPinName(m.dirPin, mosi),
                        canPinName(m.enablePin, miso), 2 << (m.flags & ACCEL_RANGE_MASK), m.flags >> ACCEL_RATE_SHIFT);
             }
+            else if (m.type == MODULE_IMPACT)
+            {
+                printf("CONFIG: module %d: impact detection, input %d, threshold %d.%d g, hold %d ms, high-pass %d Hz\n",
+                       c.index + 1, m.bit, m.flags / 10, m.flags % 10, m.dirPin * IMPACT_HOLD_UNIT_MS,
+                       m.enablePin * IMPACT_CUTOFF_UNIT_HZ);
+            }
             else if (m.type == MODULE_TMC2209)
             {
                 printf("CONFIG: module %d: TMC2209 UART %s, address %d, %d mA, %d microsteps, %s, stall %d\n",
@@ -437,6 +468,7 @@ void CanNode::applyConfig()
     this->pwmCount = 0;
     this->rgbChainCount = 0;
     this->rgbCount = 0;
+    this->impactOn = false;
     for (int i = 0; i < this->moduleCount; i++)
     {
         const canNodeModule_t& m = this->modules[i];
@@ -450,6 +482,18 @@ void CanNode::applyConfig()
             this->lastAccel = this->now;
             this->lastAccelEmcy = this->now - CAN_EMCY_REPEAT_MS;      // status right away
             this->accelFrames = 0;
+            continue;
+        }
+        if (m.type == MODULE_IMPACT)
+        {
+            // after MODULE_ACCEL (checkModule): the sensor runs already
+            uint32_t rate = 3200u >> (ACCEL_RATE_MAX - (this->accel.getFlags() >> ACCEL_RATE_SHIFT));
+            uint16_t threshold = (uint16_t)lrintf(m.flags * IMPACT_G_UNIT / ACCEL_G_PER_COUNT);
+            this->accel.setImpact(threshold, (uint16_t)(m.dirPin * IMPACT_HOLD_UNIT_MS),
+                                  (uint16_t)(m.enablePin * IMPACT_CUTOFF_UNIT_HZ), (uint16_t)rate);
+            this->impactModule = (uint8_t)i;
+            this->impactBit = m.bit;
+            this->impactOn = true;
             continue;
         }
         if (m.type == MODULE_RGB)
@@ -587,6 +631,7 @@ void CanNode::releaseModules()
     this->rgbChainCount = 0;
     this->rgbCount = 0;
     this->accel.stop();
+    this->impactOn = false;
 
     uint8_t pins[MODULE_PINS_MAX];
     for (int i = 0; i < this->moduleCount; i++)
@@ -740,6 +785,7 @@ uint16_t CanNode::readInputs()
         if (m.type != MODULE_DIGITAL_PIN || (m.flags & DPIN_OUTPUT)) continue;
         if (canIoRead(m.pin) != ((m.flags & DPIN_INVERT) != 0)) in |= (uint16_t)(1u << m.bit);
     }
+    if (this->impactOn && this->accel.impact(this->now)) in |= (uint16_t)(1u << this->impactBit);
     return in;
 }
 
@@ -945,6 +991,24 @@ bool CanNode::sendAccelStatus()
 }
 
 
+void CanNode::sendImpact()
+{
+    uint16_t peak = (uint16_t)lrintf(this->accel.getImpactPeak() * ACCEL_G_PER_COUNT / IMPACT_G_UNIT);
+    uint16_t count = (uint16_t)this->accel.getImpactCount();
+    canFrame_t f;
+    f.id = CAN_ID_EMCY + this->node;
+    f.extended = false;
+    f.len = 6;
+    f.data[0] = EMCY_IMPACT;
+    f.data[1] = this->impactModule;
+    f.data[2] = (uint8_t)peak;
+    f.data[3] = (uint8_t)(peak >> 8);
+    f.data[4] = (uint8_t)count;
+    f.data[5] = (uint8_t)(count >> 8);
+    this->can->send(f);                     // the input bit is what counts, this is for the console
+}
+
+
 void CanNode::serviceAccel()
 {
     if (!this->accel.isActive()) return;
@@ -959,11 +1023,20 @@ void CanNode::serviceAccel()
         this->lastAccelEmcy = this->now;
     }
 
+    if (this->impactOn && this->accel.takeImpact())
+    {
+        this->sendImpact();                 // the input bit goes out in STATUS right after this
+        printf("IMPACT %d, %d mg\n", (int)this->accel.getImpactCount(),
+               (int)(this->accel.getImpactPeak() * ACCEL_G_PER_COUNT * 1000.0f));
+    }
+
     // the average of the new samples, every CAN_ACCEL_MS; nothing new (low rate): no frame
     if ((this->now - this->lastAccel) < CAN_ACCEL_MS) return;
     int16_t xyz[3];
-    uint8_t count, flags;
-    if (!this->accel.take(xyz, &count, &flags)) return;
+    uint16_t peak;
+    uint8_t flags;
+    if (!this->accel.take(xyz, &peak, &flags)) return;
+    uint32_t peakUnits = (uint32_t)lrintf(peak * ACCEL_G_PER_COUNT / IMPACT_G_UNIT);
     this->lastAccel = this->now;
 
     canFrame_t f;
@@ -975,7 +1048,7 @@ void CanNode::serviceAccel()
         f.data[2 * a] = (uint8_t)xyz[a];
         f.data[2 * a + 1] = (uint8_t)((uint16_t)xyz[a] >> 8);
     }
-    f.data[6] = count;
+    f.data[6] = (uint8_t)(peakUnits > 255 ? 255 : peakUnits);
     f.data[7] = flags;
     if (this->can->send(f)) this->accelFrames++;      // TX queue full: this one is lost, the next follows in a ms
 }
