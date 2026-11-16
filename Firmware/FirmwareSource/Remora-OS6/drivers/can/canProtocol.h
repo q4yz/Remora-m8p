@@ -32,8 +32,8 @@
 
 #include <stdint.h>
 
-#define CAN_PROTOCOL_VERSION    8           // 2: config and digital I/O, 3: joints, 4: TMC2209, 5: analog, 6: PWM, 7: RGB,
-                                            // 8: accelerometer
+#define CAN_PROTOCOL_VERSION    9           // 2: config and digital I/O, 3: joints, 4: TMC2209, 5: analog, 6: PWM, 7: RGB,
+                                            // 8: accelerometer, 9: impact detection
 
 #define CAN_NODE_MAX            15          // node numbers 1 ... 15
 
@@ -106,6 +106,7 @@
 #define MODULE_PWM              0x05        // data: pin, safe duty %, local PWM index, period in base ticks (16 bit)
 #define MODULE_RGB              0x06        // data: pin, colour order (rgbColor.h), local segment, first LED (0 ...), LEDs
 #define MODULE_ACCEL            0x07        // data: CS pin, ACCEL_* flags, SCK pin, MOSI pin, MISO pin
+#define MODULE_IMPACT           0x08        // data: CAN_PIN_NONE, threshold 0.1 g, local input bit, hold 10 ms, cutoff 10 Hz
 
 // PWM outputs: software PWM in the node base thread, one period = period base ticks
 // (CAN_NODE_BASE_FREQ). PWM frame hub -> node: per local output i a 16-bit duty,
@@ -130,8 +131,8 @@
 
 // accelerometer (ADXL345 on SPI, one per node): the node reads the sensor's FIFO in its main loop
 // and sends, every CAN_ACCEL_MS with new samples, their average in ACCEL: X, Y, Z as int16 little
-// endian in the sensor's full resolution counts (ACCEL_G_PER_COUNT), byte 6 the samples averaged
-// (up to 255), byte 7 ACCEL_FRAME_* flags. The hub maps the axes and writes mm/s^2 into the
+// endian in the sensor's full resolution counts (ACCEL_G_PER_COUNT), byte 6 the impact peak since
+// the last frame (0.1 g, 0 without impact detection), byte 7 ACCEL_FRAME_* flags. The hub maps the axes and writes mm/s^2 into the
 // LinuxCNC process variables. Flags of the module: bits 0-1 range (2, 4, 8, 16 g), bits 4-7 the
 // output data rate as the ADXL345 BW_RATE code (0x0A 100 Hz ... 0x0F 3200 Hz)
 #define ACCEL_RANGE_MASK        0x03        // 0: +-2 g ... 3: +-16 g
@@ -141,6 +142,15 @@
 #define ACCEL_G_PER_COUNT       0.0039f     // full resolution: 3.9 mg per count in every range
 #define ACCEL_FRAME_OVERRUN     0x01        // the sensor's FIFO was full: samples lost since the last frame
 #define CAN_ACCEL_MS            1
+
+// impact detection (MODULE_IMPACT, after the node's MODULE_ACCEL): every sensor sample through a
+// 2nd order Butterworth high-pass (cutoff, default 300 Hz: motion and ringing out, the broadband
+// spike of a hit stays), the magnitude of X, Y, Z against the threshold. A hit sets the local input
+// bit for the hold time (from the last sample over the threshold) and is reported in EMCY_IMPACT
+#define IMPACT_G_UNIT           0.1f        // threshold and peak in 0.1 g
+#define IMPACT_HOLD_UNIT_MS     10
+#define IMPACT_CUTOFF_UNIT_HZ   10
+#define IMPACT_CUTOFF_MIN       5           // 50 Hz; and below 0.4 x the sensor's rate
 
 // analog inputs: the node averages its ADC readings and sends them raw in ANALOG, byte 2i / 2i + 1
 // local input i, 0 ... 65535, little endian; the hub turns them into temperatures (thermistor)
@@ -162,6 +172,9 @@
 // EMCY_ACCEL byte 1 module index, 2 status (ACCEL_STATUS_*), 3 the device ID read (ADXL345: 0xE5),
 //            on a change and every CAN_EMCY_REPEAT_MS
 #define EMCY_ACCEL              0x02
+// EMCY_IMPACT byte 1 module index, 2-3 the peak (0.1 g), 4-5 impacts since the configuration, at
+//            every new impact (the input bit was low)
+#define EMCY_IMPACT             0x03
 #define ACCEL_STATUS_NONE       0           // not configured yet
 #define ACCEL_STATUS_OK         1           // running
 #define ACCEL_STATUS_MISSING    2           // wrong or no device ID: not connected, retried every second
@@ -311,6 +324,11 @@ static inline bool canParsePin(const char* s, uint8_t* pin)
 // pin byte -> "PB_8"
 static inline const char* canPinName(uint8_t pin, char buf[6])
 {
+    if (pin == CAN_PIN_NONE)
+    {
+        buf[0] = 'n'; buf[1] = 'o'; buf[2] = 'n'; buf[3] = 'e'; buf[4] = 0;
+        return buf;
+    }
     int n = CAN_PIN_NUMBER(pin);
     buf[0] = 'P';
     buf[1] = (char)('A' + CAN_PIN_PORT(pin));

@@ -22,7 +22,8 @@
              node (PWM frame), software PWM there, the safe duty without LinuxCNC
     accel    "ADXL345" modules on nodes: the node sends the average of the
              accelerometer's samples every ms (ACCEL), the hub maps the axes
-             and writes mm/s^2 into up to three process variables
+             and writes mm/s^2 into up to three process variables; impact
+             detection on the node sets a LinuxCNC input bit (E-stop chain)
     temp     "Temperature" (thermistor) modules on nodes: the node sends its
              ADC readings (ANALOG), the hub turns them into the temperature,
              same Beta formula as the local module, into the process variable
@@ -137,6 +138,18 @@ typedef struct
     bool     accelReport;       // status changed, waiting to be printed
     uint32_t accelFrames;       // ACCEL frames received (debug)
     uint32_t accelOverruns;     // frames with samples lost on the node
+    uint16_t accelRate;         // Hz
+
+    // impact detection: a node local input bit (inBit), the peak per ACCEL frame in impactPeakPv (g)
+    bool     hasImpact;
+    uint8_t  impactModule;
+    uint8_t  impactBit;         // LinuxCNC input bit
+    float    impactThreshold;   // g
+    int8_t   impactPeakPv;      // -1: none
+    float    impactPeak;        // g, in the last ACCEL frame
+    float    impactLastPeak;    // g, of the last impact (EMCY)
+    uint16_t impactCount;       // impacts since the configuration (EMCY)
+    bool     impactReport;      // waiting to be printed
 } canNodeEntry_t;
 
 #define CAN_HUB_VARIABLES       6           // LinuxCNC process variables (VARIABLES in configuration.h)
@@ -257,12 +270,18 @@ class CanHub
         bool addThermistor(int node, const char* pin, int pv, float beta, float r0, float t0, float pullup);
 
         // an "ADXL345" accelerometer on a node: SPI pins (nullptr / "": the EBB42 / SB2209 ones, CS PB_12,
-        // SCK PB_10, MOSI PB_11, MISO PB_2), the process variables of the X, Y, Z axes (-1: not used,
-        // at least one), axesMap the sensor axis of each as in Klipper ("x,y,z", "-y,x,z"), range in g
+        // SCK PB_10, MOSI PB_11, MISO PB_2), the process variables of the X, Y, Z axes (-1: not used;
+        // none: impact detection only), axesMap the sensor axis of each as in Klipper ("x,y,z", "-y,x,z"), range in g
         // (2, 4, 8, 16), rate the sensor's output data rate (100, 200 ... 3200 Hz)
         bool addAdxl345(int node, const char* cs, const char* sck, const char* mosi, const char* miso,
                         int pvX, int pvY, int pvZ, const char* axesMap, int range, int rate);
         bool getAccel(int node, float xyz[3]);  // mm/s^2 (test); false: no reading
+
+        // impact detection on the node's ADXL345 (after addAdxl345): dataBit the LinuxCNC input bit, 1
+        // for holdMs after a hit; threshold in g of the high-passed (cutoffHz) acceleration; peakPv a
+        // process variable for the highest high-passed value per ms in g (tuning), -1: none
+        bool addImpact(int node, int dataBit, float threshold, int holdMs, int cutoffHz, int peakPv);
+        uint16_t getImpactCount(int node);  // impacts the node reported (test)
 
         // writes the node temperatures and accelerations into txData.processVariable, main loop; CAN_TEMP_ERROR
         // while a node is lost or not configured, or its sensor is open / shorted; an acceleration 0

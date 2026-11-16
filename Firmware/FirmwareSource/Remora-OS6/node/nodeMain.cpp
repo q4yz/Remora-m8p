@@ -121,6 +121,13 @@ int main()
                 printf("node: ADXL345 %s, %lu samples, %lu ACCEL frame(s), %lu FIFO overrun(s), last %d %d %d\n",
                        accelStatusText(accel.getStatus()), (unsigned long)accel.getSamples(),
                        (unsigned long)node.getAccelFrames(), (unsigned long)accel.getOverruns(), a[0], a[1], a[2]);
+                if (node.getImpactOn())
+                {
+                    // the high-passed peaks: for setting "Impact Threshold" above what printing gives
+                    printf("node: impact detection, %lu impact(s), peak %d mg in the last 2 s, %d mg since the start\n",
+                           (unsigned long)accel.getImpactCount(), (int)(accel.takeRecentPeak() * 3.9f),
+                           (int)(accel.getMaxPeak() * 3.9f));
+                }
             }
             can->printStatus();
         }

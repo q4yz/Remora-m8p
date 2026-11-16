@@ -15,7 +15,8 @@ for s in uuid assign two-nodes unknown lost node-reboot bad-config \
          joint-reboot tmc tmc-reset tmc-no-power tmc-write-lost tmc-config \
          thermistor thermistor-lost thermistor-config pwm pwm-lost pwm-config \
          rgb rgb-lost rgbw rgb-config safe-timeout safe-timeout-hub-lost safe-timeout-never \
-         accel accel-map accel-missing accel-lost accel-config; do "$B"/test $s || r=1; done
+         accel accel-map accel-missing accel-lost accel-config \
+         impact impact-only impact-config; do "$B"/test $s || r=1; done
 rm -rf "$B"
 echo "ALL: $([ $r = 0 ] && echo PASSED || echo FAILED)"
 exit $r

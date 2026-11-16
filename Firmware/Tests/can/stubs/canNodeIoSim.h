@@ -28,6 +28,10 @@ struct SimIo
     int adxlPhase = 0;            /* sample rate accumulator */
     int16_t adxlXyz[3] = {};
     int adxlReads = 0;            /* samples read */
+    int adxlImpulse[3] = {};      /* added to the next adxlImpulseSamples samples: a hit */
+    int adxlImpulseSamples = 0;
+    float adxlSineAmp = 0;        /* counts, on X: motion / ringing at adxlSineHz */
+    float adxlSineHz = 0;
     void adxlMs() {               /* one ms of the sensor sampling at its BW_RATE in stream mode */
         if (!adxlPresent || !(adxlReg[0x2D] & 0x08) || (adxlReg[0x38] & 0xC0) != 0x80) return;
         int hz = 3200 >> (0x0F - (adxlReg[0x2C] & 0x0F));

@@ -2,6 +2,7 @@
 #include "canNodeIoSim.h"
 #include "canProtocol.h"
 #include <string.h>
+#include <math.h>
 
 SimIo* simIo = nullptr;
 
@@ -100,7 +101,16 @@ void canIoSpiTransfer(const uint8_t* tx, uint8_t* rx, int len)
     {
         simIo->adxlFifo--;
         simIo->adxlReads++;
-        for (int a = 0; a < 3; a++) { rx[1 + 2 * a] = (uint8_t)simIo->adxlXyz[a]; rx[2 + 2 * a] = (uint8_t)((uint16_t)simIo->adxlXyz[a] >> 8); }
+        int hz = 3200 >> (0x0F - (simIo->adxlReg[0x2C] & 0x0F));
+        for (int a = 0; a < 3; a++)
+        {
+            int v = simIo->adxlXyz[a];
+            if (a == 0 && simIo->adxlSineAmp != 0)
+                v += (int)lrintf(simIo->adxlSineAmp * sinf(6.2831853f * simIo->adxlSineHz * simIo->adxlReads / hz));
+            if (simIo->adxlImpulseSamples > 0) v += simIo->adxlImpulse[a];
+            rx[1 + 2 * a] = (uint8_t)v; rx[2 + 2 * a] = (uint8_t)((uint16_t)v >> 8);
+        }
+        if (simIo->adxlImpulseSamples > 0) simIo->adxlImpulseSamples--;
     }
     else rx[1] = simIo->adxlReg[reg];
 }

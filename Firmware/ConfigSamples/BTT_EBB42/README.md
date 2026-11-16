@@ -207,6 +207,37 @@ only 6 PVs. In HAL `remora.PV.3` ... `remora.PV.5`; at rest Z shows about
 `NOT FOUND`: the sensor does not answer (pins, the sensor not fitted); the node
 keeps trying every second. Details: `CAN_PROTOCOL.md`, "Accelerometer".
 
+### Crash guard (impact detection)
+
+`"Impact Bit"` makes the accelerometer a crash sensor: a LinuxCNC input bit
+that is 1 for 200 ms after the toolhead is hit (a high-pass at 300 Hz keeps
+normal motion and ringing out). The acceleration PVs are optional:
+
+```json
+{ "Type": "ADXL345", "Comment": "crash guard", "Impact Bit": 6,
+  "Impact Threshold": 3.0, "Impact Peak PV[i]": 3 }
+```
+
+Into the E-stop chain in HAL, e.g. with the hub's status bit:
+
+```
+loadrt estop_latch
+addf estop-latch.0 servo-thread
+net can-ok       remora.input.15 => estop-latch.0.ok-in
+net tool-crash   remora.input.06 => estop-latch.0.fault-in
+net estop-reset  iocontrol.0.user-request-enable => estop-latch.0.reset
+net estop-ok     estop-latch.0.ok-out => iocontrol.0.emc-enable-in
+```
+
+(merged into the existing E-stop chain if the machine has one).
+
+Set the threshold from the peak: print the fastest moves and watch
+`remora.PV.3` (g) in halscope, or the EBB USB console (`peak ... mg in the
+last 2 s`), and set `"Impact Threshold"` well above it. Then remove `"Impact
+Peak PV[i]"` to free the PV. It catches hard hits (clips, frame, a loose
+part), not the nozzle dragging over the print. The position is lost after a
+crash: home again.
+
 ## E-stop when the node is missing
 
 Nodes are mandatory by default (`"Mandatory": "False"` makes one optional).

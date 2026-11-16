@@ -28,6 +28,8 @@
              RGB, off while the hub or LinuxCNC is gone
     accel    ADXL345 accelerometer on SPI (NodeAdxl345), the average of its
              samples every ms in ACCEL, its status in EMCY
+    impact   impact detection on the accelerometer's samples (high-pass,
+             threshold): a node local input bit in STATUS, EMCY per impact
 ************************************************************************/
 
 #include "drivers/rgb/rgbColor.h"
@@ -167,6 +169,9 @@ class CanNode
         uint32_t    lastAccel;      // ms, last ACCEL frame
         uint32_t    lastAccelEmcy;
         uint32_t    accelFrames;    // ACCEL frames since the configuration (debug)
+        bool        impactOn;
+        uint8_t     impactModule;
+        uint8_t     impactBit;      // node local input bit
 
         bool sendLssReply(void);
         void sendHeartbeat(void);
@@ -185,6 +190,7 @@ class CanNode
         void handleRgb(const canFrame_t& frame);
         void serviceRgb(void);
         bool sendAccelStatus(void);
+        void sendImpact(void);
         void serviceAccel(void);
         void setJointEnable(canNodeJoint_t& j, bool enabled);
         void stopJoints(void);
@@ -233,6 +239,7 @@ class CanNode
         uint32_t getRgbFrames(void) { return this->rgbFrames; }
         NodeAdxl345& getAccel(void) { return this->accel; }
         uint32_t getAccelFrames(void) { return this->accelFrames; }
+        bool getImpactOn(void) { return this->impactOn; }
 };
 
 #endif
