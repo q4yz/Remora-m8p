@@ -26,6 +26,8 @@ jobs:
         run: sh Firmware/Tests/link/run.sh
       - name: Step scheduler
         run: sh Firmware/Tests/stepsched/run.sh
+      - name: Extruder component (flow / pressure advance)
+        run: sh LinuxCNC/Components/Extruder/test/run.sh
 
   firmware:
     name: ${{ matrix.target }}

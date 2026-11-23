@@ -1,0 +1,184 @@
+component jointshape "Input shaping, skew correction and a resonance test signal for one X / Y joint";
+
+description """
+Sits between a joint and its step generator, like the extruder
+component's flow stage:
+
+.nf
+net j0pos-cmd joint.0.motor-pos-cmd => shape-j0.pos-cmd-in
+net j0pos-cmd-shaped shape-j0.pos-cmd-out => remora.joint.0.pos-cmd
+net j0pos-fb remora.joint.0.pos-fb => shape-j0.pos-fb-in
+net j0pos-fb-shaped shape-j0.pos-fb-out => joint.0.motor-pos-fb
+.fi
+
+\\fBSkew\\fR (Klipper's skew_correction): the X joint gets
+x - \\fBskew-factor\\fR × \\fBskew-ref\\fR (net the Y joint's motor-pos-cmd).
+
+\\fBInput shaping\\fR (Klipper's): the position runs through a shaper
+(\\fBshaper-type\\fR 1 ZV, 2 MZV, 3 ZVD, 4 EI; 0 off) tuned to
+\\fBshaper-freq\\fR (Hz, 0 = off) and \\fBdamping\\fR: a sum of delayed
+copies of the input, so the output never leaves the range the input had.
+A new frequency / type is taken over once the joint stands still.
+
+\\fBResonance test\\fR: \\fBtest-amp\\fR (mm) × sin(2π \\fBtest-freq\\fR t) is
+added (the amplitude ramps over 0.1 s), for measuring resonances with an
+accelerometer.
+
+The feedback is mapped back (\\fBpos-fb-out\\fR = input + stepgen error),
+so LinuxCNC's following error is the step generator's own.
+""";
+
+pin in float pos_cmd_in "The joint's motor-pos-cmd";
+pin in float pos_fb_in "The step generator's position feedback";
+pin in float skew_ref "Skew: the other axis' commanded position (Y for the X joint)";
+pin in float skew_factor = 0.0 "Skew: x - skew_factor * skew_ref (Klipper's xy factor)";
+pin in float shaper_freq = 0.0 "Input shaper frequency (Hz), 0 = off";
+pin in float test_amp = 0.0 "Resonance test amplitude (mm), 0 = off";
+pin in float test_freq = 0.0 "Resonance test frequency (Hz)";
+pin out float pos_cmd_out "The shaped position for the step generator";
+pin out float pos_fb_out "The feedback mapped back for the joint's motor-pos-fb";
+pin out bit shaper_active "A shaper is applied now";
+
+param rw s32 shaper_type = 2 "1 ZV, 2 MZV, 3 ZVD, 4 EI (0 off)";
+param rw float damping = 0.1 "Shaper damping ratio";
+
+variable double hist[512];
+variable int head = 0;
+variable int filled = 0;
+variable int n_imp = 0;
+variable double imp_a[4];
+variable double imp_t[4];
+variable double active_freq = -1.0;
+variable int active_type = -1;
+variable double active_damping = -1.0;
+variable double phase = 0.0;
+variable double amp_now = 0.0;
+
+license "GPL";
+author "LinuxCNC_UI";
+
+function _ fp "Shape the position";
+;;
+
+#include <rtapi_math.h>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#define HIST 512
+
+static void make_shaper(struct __comp_state *__comp_inst, double f, int type, double zeta)
+{
+    double df, k, td, a[4], t[4], sum;
+    int n = 0, i;
+    if (f <= 0.0 || type <= 0) {
+        n_imp = 0;
+        return;
+    }
+    if (zeta < 0.0) zeta = 0.0;
+    if (zeta > 0.9) zeta = 0.9;
+    df = sqrt(1.0 - zeta * zeta);
+    k = exp(-zeta * M_PI / df);
+    td = 1.0 / (f * df);
+    switch (type) {
+    case 1: /* ZV */
+        a[0] = 1.0; a[1] = k;
+        t[0] = 0.0; t[1] = 0.5 * td;
+        n = 2;
+        break;
+    case 3: /* ZVD */
+        a[0] = 1.0; a[1] = 2.0 * k; a[2] = k * k;
+        t[0] = 0.0; t[1] = 0.5 * td; t[2] = td;
+        n = 3;
+        break;
+    case 4: { /* EI, 5 % tolerance */
+        double v = 0.05;
+        a[0] = 0.25 * (1.0 + v); a[1] = 0.5 * (1.0 - v) * k; a[2] = a[0] * k * k;
+        t[0] = 0.0; t[1] = 0.5 * td; t[2] = td;
+        n = 3;
+        break;
+    }
+    default: { /* MZV */
+        double k2 = exp(-0.75 * zeta * M_PI / df);
+        double a1 = 1.0 - 1.0 / sqrt(2.0);
+        a[0] = a1; a[1] = (sqrt(2.0) - 1.0) * k2; a[2] = a1 * k2 * k2;
+        t[0] = 0.0; t[1] = 0.375 * td; t[2] = 0.75 * td;
+        n = 3;
+        break;
+    }
+    }
+    sum = 0.0;
+    for (i = 0; i < n; i++) sum += a[i];
+    /* out(t) = sum a_i * in(t - t_i) */
+    for (i = 0; i < n; i++) {
+        imp_a[i] = a[i] / sum;
+        imp_t[i] = t[i];
+    }
+    n_imp = n;
+}
+
+static double sample(struct __comp_state *__comp_inst, double delay_s, double period)
+{
+    double d = period > 0.0 ? delay_s / period : 0.0;
+    int i0 = (int)d;
+    double frac = d - i0;
+    int max = filled - 1;
+    double a, b;
+    if (i0 >= max) { i0 = max; frac = 0.0; }
+    a = hist[(head - i0 + HIST * 2) % HIST];
+    b = hist[(head - i0 - 1 + HIST * 2) % HIST];
+    return a + (b - a) * frac;
+}
+
+FUNCTION(_) {
+    double x = pos_cmd_in - skew_factor * skew_ref;
+    double shaped = x;
+    int i, still = 1;
+    double amp_target, alpha;
+
+    /* history of the (skewed) input, newest at head */
+    head = (head + 1) % HIST;
+    hist[head] = x;
+    if (filled < HIST) filled++;
+    if (filled == 1) {
+        for (i = 0; i < HIST; i++) hist[i] = x;
+        filled = HIST;
+    }
+
+    /* a new shaper only while the joint stands still (no jump) */
+    if (shaper_freq != active_freq || shaper_type != active_type || damping != active_damping) {
+        for (i = 1; i < HIST; i++) {
+            if (fabs(hist[(head - i + HIST) % HIST] - x) > 1e-6) { still = 0; break; }
+        }
+        if (still || active_type < 0) {
+            make_shaper(__comp_inst, shaper_freq, shaper_type, damping);
+            /* a shaper longer than the history is not applied */
+            if (n_imp > 0 && imp_t[n_imp - 1] / fperiod >= HIST - 1) n_imp = 0;
+            active_freq = shaper_freq;
+            active_type = shaper_type;
+            active_damping = damping;
+        }
+    }
+    if (n_imp > 0) {
+        shaped = 0.0;
+        for (i = 0; i < n_imp; i++) shaped += imp_a[i] * sample(__comp_inst, imp_t[i], fperiod);
+    }
+    shaper_active = n_imp > 0;
+
+    /* resonance test signal, amplitude ramped */
+    amp_target = (test_amp > 0.0 && test_freq > 0.0) ? test_amp : 0.0;
+    alpha = fperiod / 0.1;
+    if (alpha > 1.0) alpha = 1.0;
+    amp_now += (amp_target - amp_now) * alpha;
+    if (amp_now > 1e-9) {
+        phase += 2.0 * M_PI * test_freq * fperiod;
+        if (phase > 2.0 * M_PI) phase -= 2.0 * M_PI;
+        shaped += amp_now * sin(phase);
+    } else {
+        amp_now = 0.0;
+        phase = 0.0;
+    }
+
+    pos_cmd_out = shaped;
+    pos_fb_out = pos_cmd_in + (pos_fb_in - pos_cmd_out);
+}
