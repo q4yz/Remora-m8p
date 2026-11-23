@@ -17,9 +17,15 @@ moves are scaled by \\fBflow-percent\\fR (10 ... 500, 0 = 100). A new value
 is rebased on the current position, so it never jumps; the feedback is
 scaled back, so LinuxCNC's following error stays as before.
 
-Pressure advance (Klipper's): while extruding, the stepgen is moved
-\\fBpressure-advance\\fR × the extruder's speed ahead (mm per mm/s),
-smoothed over \\fBpa-smooth-time\\fR; the feedback removes it again.
+Pressure advance (Klipper's): while extruding during an X / Y move, the
+stepgen is moved \\fBpressure-advance\\fR × the extruder's speed ahead (mm
+per mm/s), smoothed over \\fBpa-smooth-time\\fR; the feedback removes it
+again. Like Klipper, not for extruder-only moves (retract, unretract,
+loading): the target is 0 unless \\fBvel-x\\fR / \\fBvel-y\\fR (the X / Y
+joints' \\fBvel-cmd\\fR) say the head moves. The offset changes no faster
+than leaves the stepgen within \\fBmax-velocity\\fR (mm/s, the extruder
+joint's MAX_VELOCITY; 0 = no limit): a CAN node's step generator has a
+hard step-rate limit, and LinuxCNC never sees the offset to plan for it.
 Ignored while homing and for jumps (> 500 mm/s).
 
 .nf
@@ -35,6 +41,9 @@ net j3pos-cmd-flow extruder-heater_extruder.pos-cmd-out => remora.joint.3.pos-cm
 net j3pos-fb remora.joint.3.pos-fb => extruder-heater_extruder.pos-fb-in
 net j3pos-fb-flow extruder-heater_extruder.pos-fb-out => joint.3.motor-pos-fb
 net heater_extruder-flow webgui.flow => extruder-heater_extruder.flow-percent
+net heater_extruder-vel-x joint.0.vel-cmd => extruder-heater_extruder.vel-x
+net heater_extruder-vel-y joint.1.vel-cmd => extruder-heater_extruder.vel-y
+setp extruder-heater_extruder.max-velocity [JOINT_3]MAX_VELOCITY
 .fi
 """;
 
@@ -50,6 +59,8 @@ pin in float pos_cmd_in "Flow: the joint's motor-pos-cmd";
 pin in float pos_fb_in "Flow: the stepgen's position feedback";
 pin in float flow_percent = 100.0 "Flow: extrusion in percent, 10 ... 500 (0 = 100)";
 pin in float pressure_advance = 0.0 "Pressure advance: mm of extra extruder position per mm/s (0 = off)";
+pin in float vel_x "Pressure advance: the X joint's vel-cmd (PA only while X / Y move)";
+pin in float vel_y "Pressure advance: the Y joint's vel-cmd";
 
 // --- User Parameters ---
 param rw float min_valid_temp = 5.0 "Failsafe: Tripped if sensor disconnects";
@@ -60,6 +71,8 @@ param rw float watchdog_time = 20.0 "Seconds allowed without temperature rising"
 param rw float min_extrude_vel = 0.000001 "A |vel-cmd| above this is an extruder move (units/s)";
 param rw float min_extrude_time = 0.05 "Seconds an extruder move must last before cold_extrude (ignores a homing spike)";
 param rw float pa_smooth_time = 0.040 "Pressure advance smoothing time (s), Klipper's pressure_advance_smooth_time";
+param rw float max_velocity = 0.0 "Pressure advance: the stepgen's speed limit (mm/s, 0 = none); the offset never pushes past it";
+param rw float min_xy_vel = 0.1 "Pressure advance: X / Y faster than this (mm/s) is a move that extrudes";
 
 // --- Outputs ---
 pin out float safe_target_temp "Sent to PID command";
@@ -167,13 +180,22 @@ FUNCTION(_) {
         // 4d. Pressure advance: ahead by K x the extruder's (scaled) speed
         double v = fperiod > 0.0 ? (pos_cmd_in - pa_last_in) / fperiod * flow_factor : 0.0;
         double target = 0.0;
+        int xy_moving = fabs(vel_x) + fabs(vel_y) > min_xy_vel;
         pa_last_in = pos_cmd_in;
-        if (pressure_advance > 0.0 && !homing && v > 0.0 && v < 500.0) {
+        if (pressure_advance > 0.0 && !homing && xy_moving && v > 0.0 && v < 500.0) {
             target = pressure_advance * v;
         }
         double alpha = pa_smooth_time > 0.0 ? fperiod / pa_smooth_time : 1.0;
         if (alpha > 1.0) alpha = 1.0;
-        pa_value += (target - pa_value) * alpha;
+        double step = (target - pa_value) * alpha;
+        // the offset's own speed: what the stepgen has left above the move's
+        if (max_velocity > 0.0) {
+            double room = (max_velocity - fabs(v)) * fperiod;
+            if (room < 0.0) room = 0.0;
+            if (step > room) step = room;
+            if (step < -room) step = -room;
+        }
+        pa_value += step;
         if (pressure_advance <= 0.0 && fabs(pa_value) < 1e-9) pa_value = 0.0;
         pa_offset = pa_value;
         pos_cmd_out += pa_value;
