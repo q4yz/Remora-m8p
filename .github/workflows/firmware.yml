@@ -24,6 +24,8 @@ jobs:
         run: sh Firmware/Tests/can/run.sh
       - name: SPI link
         run: sh Firmware/Tests/link/run.sh
+      - name: Probe latch
+        run: sh Firmware/Tests/probe/run.sh
       - name: Extruder component (flow / pressure advance)
         run: sh LinuxCNC/Components/Extruder/test/run.sh
 

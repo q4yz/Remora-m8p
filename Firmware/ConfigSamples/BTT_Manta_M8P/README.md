@@ -123,6 +123,26 @@ A hot MCU is a symptom, not normal operation: the STM32 itself dissipates far
 too little to reach this by itself. Look for a pin with external voltage on it,
 a shorted output or a hot neighbour (stepper drivers without heat sinks).
 
+## Probe latch (exact probe trigger position)
+
+LinuxCNC sees the probe once per servo period (1 ms): `G38` stops on that, and its latched
+position is the one of that SPI frame. At 5 mm/s that is a 0.005 mm grid plus up to a few
+milliseconds of jitter (the board's 1 kHz servo thread reads the pin, unsynchronised with the
+SPI frame; a broken reply holds the inputs for a few frames). A "Probe Latch" module reads the
+probe pin in the base thread (40 kHz) and captures the Z step generator's step count at the
+first trigger edge, into a process variable:
+
+```json
+{"Thread": "Base", "Type": "Probe Latch", "Comment": "probe", "Pin": "PB7",
+ "Joint Number": 2, "PV[i]": 3, "Modifier": "Pull Up", "Invert": "False"}
+```
+
+`remora.PV.3` then is `count * 4 + captures` (`captures` counts 0..3 on every capture; exact
+while |count| < 2^22). The probe keeps its "Digital Pin" input as well. An edge counts only after
+the probe was released for 2 ms (chatter at the switching point does not overwrite the capture).
+The probe pin and the Z step generator must be on the same board. LinuxCNC_UI generates the
+module and uses the latched position for `PROBE_ACCURACY`, the bed mesh and Z tilt.
+
 ## Performance
 
 The Cortex-M0+ has no FPU and runs at 64 MHz, about a third of the

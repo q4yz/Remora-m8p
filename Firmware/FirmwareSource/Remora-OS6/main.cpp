@@ -59,6 +59,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "module.h"
 #include "commsMonitor.h"
 #include "mcuTemp.h"
+#include "modules/probeLatch/probeLatch.h"
 #include "blink.h"
 #include "debug.h"
 #include "digitalPin.h"
@@ -707,6 +708,10 @@ void loadModules()
             else if (!strcmp(type,"RCServo"))
             {
                 createRCServo();
+            }
+            else if (!strcmp(type,"Probe Latch"))
+            {
+                createProbeLatch();
             }
         }
         else if (!strcmp(thread,"Servo"))
