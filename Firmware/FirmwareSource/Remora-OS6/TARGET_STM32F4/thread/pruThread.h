@@ -40,6 +40,15 @@ class pruThread
 		void startThread(void);
         void stopThread(void);
 		void run(void);
+
+		// load measurement in CPU cycles (DWT): the longest run(), the runs that took longer than a
+		// thread period (the next timer update was already pending), the average (debug console)
+		volatile uint32_t	maxTicks;
+		volatile uint32_t	overruns;
+		volatile uint64_t	sumTicks;			// all runs since takeAverage(), for the average load
+		volatile uint32_t	runs;
+		uint32_t			takeAverage(void);	// average cycles per run since the last call (main loop)
+		uint32_t			periodTicks(void) const { return SystemCoreClock / this->frequency; }
 };
 
 #endif

@@ -414,3 +414,17 @@ mbed::FileHandle* mbed::mbed_override_console(int fd)
 }
 
 #endif
+
+
+// drivers/console/nodeConsole.h
+#include "nodeConsole.h"
+
+void nodeConsoleStart(const char* serialNumber)
+{
+    usbCdc.start(serialNumber);
+}
+
+void nodeConsoleService(void)
+{
+    usbCdc.service();
+}

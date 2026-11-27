@@ -1,5 +1,6 @@
 #include "CanHub.h"
 #include "CanNode.h"
+#include "RemoraCAN.h"                  /* the simulated bus (stubs/) */
 #include "canNodeIoSim.h"
 #include <string>
 #include <cmath>
@@ -96,6 +97,7 @@ static void run(CanHub& hub, std::vector<Node*> nodes, uint32_t& now, uint32_t m
         }
         for (Node* n : nodes) {
             simIo = &n->io;
+            n->io.adxlMs();
             n->node->service(now);
             for (int k = 0; k < CAN_NODE_BASE_FREQ / 1000; k++) {
                 n->node->baseTick();
@@ -845,6 +847,205 @@ int main(int argc, char** argv) {
         CHECK(hub2.addTmc2209(1, "PB_0", 0.11f, 0, 800, 16, true, 0));       /* CAN RX: rejected by the node */
         run(hub2, {&a}, now, 3000);
         CHECK(a.node->getState() == NODE_STATE_PREOP && hub2.runningMask() == 0 && a.node->getTmcCount() == 0);
+    }
+    else if (sc == "accel") {
+        /* EBB42 ADXL345 on SPI2 (default pins), X Y Z into PV 3 4 5, 3200 Hz */
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addThermistor(1, "PA_3", 2, 3950.0f, 100000.0f, 25.0f, 4700.0f));
+        CHECK(hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));
+        a.io.adxlXyz[0] = 100; a.io.adxlXyz[1] = -50; a.io.adxlXyz[2] = 256;      /* 1 g on Z */
+        run(hub, {&a}, now, 1500);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getAccel().getStatus() == ACCEL_STATUS_OK);
+        CHECK(a.io.adxlReg[0x31] == 0x0B && a.io.adxlReg[0x2C] == 0x0F && a.io.adxlReg[0x2D] == 0x08);
+        CHECK(a.io.configured[CAN_PIN(1, 12)] && a.io.output[CAN_PIN(1, 12)] && a.io.level[CAN_PIN(1, 12)]);  /* CS idle high */
+        const float k = 0.0039f * 9806.65f;
+        printf("  PV %.1f %.1f %.1f mm/s^2\n", simPv[3], simPv[4], simPv[5]);
+        CHECK(fabsf(simPv[3] - 100 * k) < 0.5f && fabsf(simPv[4] + 50 * k) < 0.5f && fabsf(simPv[5] - 256 * k) < 0.5f);
+        uint32_t frames = a.node->getAccelFrames(), reads = a.io.adxlReads;
+        run(hub, {&a}, now, 1000);
+        printf("  1 s: %u ACCEL frames, %d samples\n", a.node->getAccelFrames() - frames, a.io.adxlReads - (int)reads);
+        CHECK(a.node->getAccelFrames() - frames >= 990 && a.io.adxlReads - reads >= 3190);
+        a.io.adxlXyz[0] = -2000;                                                    /* a new value within a ms or two */
+        run(hub, {&a}, now, 3);
+        CHECK(fabsf(simPv[3] + 2000 * k) < 1.0f);
+        CHECK(a.node->getAccel().getOverruns() == 0);
+        /* the main loop stalls 15 ms: the FIFO (32 samples, 10 ms) runs over */
+        for (int t = 0; t < 15; t++) a.io.adxlMs();
+        run(hub, {&a}, now, 5);
+        CHECK(a.node->getAccel().getOverruns() == 1);
+        CHECK(simPv[2] == CAN_TEMP_ERROR);          /* the thermistor PV is its own (ADC 0: shorted) */
+    }
+    else if (sc == "accel-map") {
+        /* mounted turned: X = -sensor Y, Y not used, Z = sensor Z; 400 Hz, +-4 g; pins of SPI1 */
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addAdxl345(1, "PA_4", "PA_5", "PA_7", "PA_6", 0, -1, 1, "-y, x, z", 4, 400));
+        a.io.adxlXyz[0] = 10; a.io.adxlXyz[1] = 20; a.io.adxlXyz[2] = 30;
+        simPv[2] = 12345.0f;
+        run(hub, {&a}, now, 1500);
+        CHECK(a.io.adxlReg[0x31] == 0x09 && a.io.adxlReg[0x2C] == 0x0C);
+        const float k = 0.0039f * 9806.65f;
+        CHECK(fabsf(simPv[0] + 20 * k) < 0.5f && fabsf(simPv[1] - 30 * k) < 0.5f && simPv[2] == 12345.0f);
+        uint32_t frames = a.node->getAccelFrames();
+        run(hub, {&a}, now, 1000);
+        printf("  400 Hz: %u ACCEL frames in 1 s\n", a.node->getAccelFrames() - frames);
+        CHECK(a.node->getAccelFrames() - frames >= 395 && a.node->getAccelFrames() - frames <= 405);   /* only with new samples */
+        simPv[2] = 0.0f;
+    }
+    else if (sc == "accel-missing") {
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));
+        a.io.adxlPresent = false;
+        a.io.adxlXyz[2] = 256;
+        simPv[5] = 7.0f;
+        run(hub, {&a}, now, 2500);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getAccel().getStatus() == ACCEL_STATUS_MISSING);
+        CHECK(simPv[5] == 0.0f);                                                    /* no sensor: 0 */
+        a.io.adxlPresent = true;                                                    /* connected: set up within a second */
+        run(hub, {&a}, now, 1100);
+        CHECK(a.node->getAccel().getStatus() == ACCEL_STATUS_OK && simPv[5] > 9000.0f);
+        a.io.adxlPresent = false;                                                   /* unplugged again: seen at once */
+        run(hub, {&a}, now, 3);
+        CHECK(a.node->getAccel().getStatus() == ACCEL_STATUS_MISSING && a.node->getAccel().getOverruns() == 0);
+        run(hub, {&a}, now, 5);
+        CHECK(simPv[5] == 0.0f);
+    }
+    else if (sc == "accel-lost") {
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));
+        a.io.adxlXyz[2] = 256;
+        run(hub, {&a}, now, 2000);
+        CHECK(simPv[5] > 9000.0f);
+        run(hub, {}, now, 400);                                                     /* node gone */
+        CHECK(simPv[5] == 0.0f);
+        run(hub, {&a}, now, 2000);                                                  /* back, configured again */
+        CHECK(simPv[5] > 9000.0f);
+    }
+    else if (sc == "accel-config") {
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode("0e0d81e4210c", 1, "");
+        hub.reserveVariables(1u << 0);
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 0, 4, 5, "x,y,z", 16, 3200));       /* PV taken by the hub */
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 6, 4, 5, "x,y,z", 16, 3200));       /* out of range */
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 3, 5, "x,y,z", 16, 3200));       /* one PV twice */
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y", 16, 3200));         /* axes map */
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,w", 16, 3200));
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 32, 3200));       /* range */
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 16, 1000));       /* rate */
+        CHECK(!hub.addAdxl345(1, "PB_10", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));  /* CS on SCK */
+        CHECK(!hub.addAdxl345(1, "XB_12", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));
+        CHECK(hub.addDigitalPin(1, "PB_2", false, false, DPIN_MOD_NONE, false, false, 0));
+        CHECK(!hub.addAdxl345(1, "", "", "", "", 3, 4, 5, "x,y,z", 16, 3200));       /* MISO used */
+        CHECK(hub.addAdxl345(1, "", "", "", "PA_6", 3, 4, 5, "X,Y,Z", 16, 3200));
+        CHECK(!hub.addAdxl345(1, "PA_4", "PA_5", "PA_7", "PB_3", 1, -1, -1, "x,y,z", 16, 3200));  /* two per node */
+        CHECK(!hub.addThermistor(1, "PA_6", 1, 3950.0f, 100000.0f, 25.0f, 4700.0f)); /* its pin */
+        CHECK(!hub.addThermistor(1, "PA_3", 4, 3950.0f, 100000.0f, 25.0f, 4700.0f)); /* its PV */
+        /* the node rejects pins that are no SPI (SCK of SPI1, MOSI / MISO of SPI2) */
+        Node a(1, 2, 3);
+        RemoraCAN hc2; CanHub hub2(&hc2);
+        hub2.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub2.addAdxl345(1, "", "PA_5", "", "", 3, -1, -1, "x,y,z", 16, 3200));
+        run(hub2, {&a}, now, 3000);
+        CHECK(a.node->getState() == NODE_STATE_PREOP && hub2.runningMask() == 0 && !a.io.spiOn);
+    }
+    else if (sc == "impact") {
+        /* X Y into PV 3 4, impact bit 5 at 3 g above 300 Hz, hold 200 ms, peak into PV 0 */
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addAdxl345(1, "", "", "", "", 3, 4, -1, "x,y,z", 16, 3200));
+        CHECK(hub.addImpact(1, 5, 3.0f, 200, 300, 0));
+        CHECK(hub.inputMask() == (1u << 5) && hub.inputValues() == 0);
+        a.io.adxlXyz[2] = 256;                                  /* gravity: no impact at the start */
+        run(hub, {&a}, now, 1500);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && a.node->getImpactOn());
+        CHECK(hub.inputValues() == 0 && hub.getImpactCount(1) == 0);
+        /* printing: motion and ringing at 2 g, measured after the start transient; and a 1 g step in
+           the acceleration (an ideal one, the belts make it softer): the high-pass keeps them out */
+        auto peakOf = [&](int ms) { float p = 0; for (int t = 0; t < ms; t++) { run(hub, {&a}, now, 1); if (simPv[0] > p) p = simPv[0]; } return p; };
+        a.io.adxlSineAmp = 512;
+        a.io.adxlSineHz = 60; peakOf(100); float p60 = peakOf(500);
+        a.io.adxlSineHz = 120; peakOf(100); float p120 = peakOf(500);
+        a.io.adxlSineAmp = 0; peakOf(100);
+        a.io.adxlXyz[1] = 256; float pStep = peakOf(100);
+        printf("  peaks: 2 g at 60 Hz %.1f g, 2 g at 120 Hz %.1f g, 1 g step %.1f g\n", p60, p120, pStep);
+        CHECK(p60 < 0.3f && p120 < 0.6f && pStep < 1.5f);
+        CHECK(hub.inputValues() == 0 && hub.getImpactCount(1) == 0);
+        a.io.adxlSineAmp = 0;
+        run(hub, {&a}, now, 50);
+        /* a hit: 8 g for 2 samples (0.6 ms) on X and Z */
+        a.io.adxlImpulse[0] = 2048; a.io.adxlImpulse[2] = -1024; a.io.adxlImpulseSamples = 2;
+        int ms = 0;
+        while (!(hub.inputValues() & (1u << 5)) && ms < 20) { run(hub, {&a}, now, 1); ms++; }
+        printf("  hit: LinuxCNC input bit after %d ms, peak PV %.1f g\n", ms, simPv[0]);
+        CHECK(ms <= 3 && a.node->getAccel().getImpactCount() == 1);
+        run(hub, {&a}, now, 150);
+        CHECK((hub.inputValues() & (1u << 5)) && hub.getImpactCount(1) == 1);      /* held */
+        run(hub, {&a}, now, 100);
+        CHECK(hub.inputValues() == 0);                                               /* hold over */
+        a.io.adxlImpulse[0] = -4000; a.io.adxlImpulseSamples = 1;                    /* the next one */
+        run(hub, {&a}, now, 5);
+        CHECK((hub.inputValues() & (1u << 5)) && hub.getImpactCount(1) == 2);
+        run(hub, {}, now, 400);                                                       /* node lost: 0 */
+        CHECK(!(hub.inputValues() & (1u << 5)));
+        run(hub, {&a}, now, 2000);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && hub.getImpactCount(1) == 0 && hub.inputValues() == 0);
+        simPv[0] = 0;
+    }
+    else if (sc == "impact-only") {
+        /* no acceleration PVs: only the impact bit, default 3 g / 200 ms / 300 Hz */
+        Node a(1, 2, 3);
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub.addDigitalPin(1, "PB_9", false, false, DPIN_MOD_PULLUP, false, false, 3));
+        CHECK(hub.addAdxl345(1, "", "", "", "", -1, -1, -1, "x,y,z", 16, 3200));
+        CHECK(hub.addImpact(1, 4, 3.0f, 200, 300, -1));
+        run(hub, {&a}, now, 1500);
+        CHECK(a.node->getState() == NODE_STATE_RUNNING && hub.inputValues() == 0);
+        a.io.level[CAN_PIN(1, 9)] = true;                       /* the digital input still works next to it */
+        run(hub, {&a}, now, 30);
+        CHECK(hub.inputValues() == (1u << 3));
+        a.io.adxlImpulse[1] = 3000; a.io.adxlImpulseSamples = 1;
+        run(hub, {&a}, now, 5);
+        CHECK(hub.inputValues() == ((1u << 3) | (1u << 4)));
+        a.io.adxlImpulse[1] = 600; a.io.adxlImpulseSamples = 1;  /* 2.3 g: under the threshold */
+        run(hub, {&a}, now, 300);
+        CHECK(hub.inputValues() == (1u << 3) && a.node->getAccel().getImpactCount() == 1);
+    }
+    else if (sc == "impact-config") {
+        RemoraCAN hc; CanHub hub(&hc);
+        hub.addNode("0e0d81e4210c", 1, "");
+        hub.reserveBits(0, 1u << 2);                                /* the hub's own input bit 2 */
+        hub.reserveVariables(1u << 1);
+        CHECK(!hub.addImpact(1, 5, 3.0f, 200, 300, -1));            /* no ADXL345 yet */
+        CHECK(hub.addAdxl345(1, "", "", "", "", 3, -1, -1, "x,y,z", 16, 400));
+        CHECK(!hub.addImpact(1, 2, 3.0f, 200, 150, -1));            /* input bit taken */
+        CHECK(!hub.addImpact(1, 16, 3.0f, 200, 150, -1));
+        CHECK(!hub.addImpact(1, 5, 0.0f, 200, 150, -1));            /* threshold */
+        CHECK(!hub.addImpact(1, 5, 30.0f, 200, 150, -1));
+        CHECK(!hub.addImpact(1, 5, 3.0f, 0, 150, -1));              /* hold */
+        CHECK(!hub.addImpact(1, 5, 3.0f, 200, 300, -1));            /* cutoff over 0.4 x 400 Hz */
+        CHECK(!hub.addImpact(1, 5, 3.0f, 200, 40, -1));             /* below 50 Hz */
+        CHECK(!hub.addImpact(1, 5, 3.0f, 200, 150, 1));             /* peak PV taken */
+        CHECK(!hub.addImpact(1, 5, 3.0f, 200, 150, 3));             /* the ADXL345's X */
+        CHECK(hub.addImpact(1, 5, 3.0f, 200, 150, 4));
+        CHECK(!hub.addImpact(1, 6, 3.0f, 200, 150, -1));            /* twice */
+        CHECK(!hub.addDigitalPin(1, "PB_9", false, false, DPIN_MOD_NONE, false, false, 5));     /* its bit */
+        /* the node checks the record: an impact module without accelerometer is rejected */
+        Node a(1, 2, 3);
+        RemoraCAN hc2; CanHub hub2(&hc2);
+        hub2.addNode(hex(a.node->getUuid()).c_str(), 1, "toolhead");
+        CHECK(hub2.addAdxl345(1, "", "PA_5", "", "", -1, -1, -1, "x,y,z", 16, 3200));     /* rejected: no SPI */
+        CHECK(hub2.addImpact(1, 5, 3.0f, 200, 300, -1));
+        run(hub2, {&a}, now, 3000);
+        CHECK(a.node->getState() == NODE_STATE_PREOP && !a.node->getImpactOn());
     }
     printf("%s\n", fails ? "FAILED" : "passed");
     return fails != 0;

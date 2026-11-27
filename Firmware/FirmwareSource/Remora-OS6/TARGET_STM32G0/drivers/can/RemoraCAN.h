@@ -4,6 +4,8 @@
 #include "mbed.h"
 #include "stm32g0xx_hal.h"
 
+#include "CanBus.h"
+
 /***********************************************************************
     Classic CAN on the STM32G0 FDCAN peripheral, polled (no interrupts,
     nothing may disturb the base thread). Accepts every standard and extended
@@ -14,15 +16,7 @@
     1 Mbit/s, 500, 250 and 125 kbit/s.
 ************************************************************************/
 
-typedef struct
-{
-    uint32_t id;
-    bool     extended;
-    uint8_t  len;
-    uint8_t  data[8];
-} canFrame_t;
-
-class RemoraCAN
+class RemoraCAN : public CanBus
 {
     private:
 
@@ -41,15 +35,15 @@ class RemoraCAN
         RemoraCAN(FDCAN_GlobalTypeDef* instance, GPIO_TypeDef* port, uint16_t rxPin, uint16_t txPin,
                   uint8_t alternate, uint32_t bitrate);
 
-        bool start(void);
-        bool send(const canFrame_t& frame);
-        bool receive(canFrame_t& frame);
-        void service(void);                 // call regularly: restarts after bus-off
+        bool start(void) override;
+        bool send(const canFrame_t& frame) override;
+        bool receive(canFrame_t& frame) override;
+        void service(void) override;        // call regularly: restarts after bus-off
 
         bool isRunning(void) { return this->running; }
         uint32_t getBusOffCount(void) { return this->busOffCount; }
-        uint16_t getErrorCount(void);       // transmit + receive error counters
-        void printStatus(void);             // one line for the debug console
+        uint16_t getErrorCount(void) override;  // transmit + receive error counters
+        void printStatus(void) override;        // one line for the debug console
 };
 
 #endif

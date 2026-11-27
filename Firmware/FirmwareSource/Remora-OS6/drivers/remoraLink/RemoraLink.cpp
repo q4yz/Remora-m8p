@@ -1,15 +1,5 @@
 #include "RemoraLink.h"
 
-#if defined(__arm__)
-// Cortex-M, as __disable_irq() / __enable_irq() (this file stays free of the MCU headers)
-#define LINK_IRQ_OFF()  __asm volatile ("cpsid i" ::: "memory")
-#define LINK_IRQ_ON()   __asm volatile ("cpsie i" ::: "memory")
-#else
-#define LINK_IRQ_OFF()
-#define LINK_IRQ_ON()
-#endif
-
-
 RemoraLink::RemoraLink(LinkHardware& hw, volatile rxData_t* ptrRxData, const volatile uint8_t* dmaRxBuffer) :
     hw(hw),
     ptrRxData(ptrRxData),
@@ -51,32 +41,63 @@ void RemoraLink::frameEnd()
         remaining = this->hw.dmaRemaining();
     }
 
-    uint8_t slot = this->qHead;
-    uint8_t next = (uint8_t)((slot + 1) % FRAME_QUEUE);
-    if (next == this->qTail)
-    {
-        // the main loop is far behind: drop this frame, the ones queued stay intact
-        this->dbgLost++;
-        if (this->hw.nssHigh()) this->hw.rearm();
-        return;
-    }
-
+    // the frame out of the DMA buffer, which the next transfer rewrites
+    const volatile uint32_t* src = (const volatile uint32_t*)this->dmaRxBuffer;
+    uint32_t* frame = (uint32_t*)this->isrFrame.rxBuffer;
     bool torn = (remaining != SPI_BUFF_SIZE);
-
     if (!torn)
     {
-        const volatile uint32_t* src = (const volatile uint32_t*)this->dmaRxBuffer;
-        uint32_t* dst = (uint32_t*)this->frameQueue[slot].rxBuffer;
         for (int i = 0; i < SPI_BUFF_SIZE / 4; i++)
         {
-            dst[i] = src[i];
+            frame[i] = src[i];
         }
         // the next frame started during the copy: the copy may hold bytes of both frames
         torn = (this->hw.dmaRemaining() != SPI_BUFF_SIZE);
     }
 
-    this->frameTorn[slot] = torn;
-    this->qHead = next;                     // publish the slot after it is complete
+    // LinuxCNC's commands go to the threads right here, in the interrupt, not through the main
+    // loop: with the CPU busy (step interrupts at a high step rate) the main loop is the first
+    // to wait, and the step generator then ran on with the frequency of tens of ms ago (it did
+    // not slow down with LinuxCNC: a following error, and the enable arrived late too). The
+    // interrupt is above the threads, they see the 16 words change at once.
+    if (!torn)
+    {
+        if (this->isrFrame.header == PRU_WRITE)
+        {
+            volatile uint32_t* dst = (volatile uint32_t*)this->ptrRxData->rxBuffer;
+            for (int i = 0; i < SPI_BUFF_SIZE / 4; i++)
+            {
+                dst[i] = frame[i];
+            }
+            this->data = true;
+        }
+        else if (this->isrFrame.header == PRU_READ)
+        {
+            this->data = true;
+        }
+    }
+
+    // the queue is for the main loop's part: statistics, bad headers and re-aligning, SD upload
+    uint8_t slot = this->qHead;
+    uint8_t next = (uint8_t)((slot + 1) % FRAME_QUEUE);
+    if (next == this->qTail)
+    {
+        // the main loop is far behind: its copy of this frame is dropped, the ones queued stay intact
+        this->dbgLost++;
+    }
+    else
+    {
+        if (!torn)
+        {
+            uint32_t* dst = (uint32_t*)this->frameQueue[slot].rxBuffer;
+            for (int i = 0; i < SPI_BUFF_SIZE / 4; i++)
+            {
+                dst[i] = frame[i];
+            }
+        }
+        this->frameTorn[slot] = torn;
+        this->qHead = next;                 // publish the slot after it is complete
+    }
 
     // re-arm for the next frame, unless it has already started (NSS low again): then the circular
     // DMA simply carries on, as without the re-arm
@@ -140,27 +161,14 @@ void RemoraLink::tasks()
         {
             case PRU_READ:
                 this->dbgReads++;
-                this->data = true;
                 this->rejectCnt = 0;
                 break;
 
             case PRU_WRITE:
-            {
+                // the data went to rxData in the interrupt (frameEnd)
                 this->dbgWrites++;
-                this->data = true;
                 this->rejectCnt = 0;
-
-                // a whole frame for the threads: they never see half of it (16 word copies)
-                const uint32_t* src = (const uint32_t*)frame.rxBuffer;
-                volatile uint32_t* dst = (volatile uint32_t*)this->ptrRxData->rxBuffer;
-                LINK_IRQ_OFF();
-                for (int i = 0; i < SPI_BUFF_SIZE / 4; i++)
-                {
-                    dst[i] = src[i];
-                }
-                LINK_IRQ_ON();
                 break;
-            }
 
             case PRU_UPLOAD:
                 this->rejectCnt = 0;

@@ -3,7 +3,7 @@
 
 /***********************************************************************
     "RGB" module: a WS2812 / SK6812 LED chain on a pin of the board
-    (STM32G0: timer channel + DMA, see TARGET_STM32G0/drivers/ws2812)
+    (the family's LedChain, drivers/rgb/ledChain.h; STM32G0: timer channel + DMA)
 
     Each segment of the chain shows the colour of one LinuxCNC set point,
     0xRRGGBB as a number (drivers/rgb/rgbColor.h). Whole chain, one SP:
@@ -33,15 +33,15 @@
 void createRgb(void);
 void rgbService(void);                  // main loop: send the chains that changed
 
-#if defined(TARGET_STM32G0)
+#ifdef REMORA_HAS_LED_CHAIN
 
-class Ws2812;
+class LedChain;
 
 class Rgb : public Module
 {
     private:
 
-        Ws2812*         strip;
+        LedChain*       strip;
         uint8_t         order;
         int             leds;
         int             segCount;
@@ -55,7 +55,7 @@ class Rgb : public Module
 
     public:
 
-        Rgb(Ws2812* strip, int leds, uint8_t order);
+        Rgb(LedChain* strip, int leds, uint8_t order);
         bool addSegment(int first, int count, volatile float* sp);
 
         virtual void update(void);      // servo thread: colours from the set points

@@ -2,8 +2,12 @@
 #include "canNodeIoSim.h"
 #include "canProtocol.h"
 #include <string.h>
+#include <math.h>
 
 SimIo* simIo = nullptr;
+
+extern uint32_t sim_uid[3];
+void canIoUniqueId(uint32_t id[3]) { id[0] = sim_uid[0]; id[1] = sim_uid[1]; id[2] = sim_uid[2]; }
 
 bool canIoPinExists(uint8_t pin) { return CAN_PIN_PORT(pin) <= 5; }
 bool canIoPinReserved(uint8_t pin) { return pin == CAN_PIN(1, 0) || pin == CAN_PIN(1, 1) || pin == CAN_PIN(0, 11) || pin == CAN_PIN(0, 12); }
@@ -62,3 +66,52 @@ bool canIoRgbSend(uint8_t pin, const uint8_t* bytes)
     return true;
 }
 void canIoRgbRelease(uint8_t pin) { simIo->rgbLeds[pin] = 0; }
+
+/* SPI: SCK, MOSI, MISO of the EBB42 / SB2209 SPI2 (PB_10, PB_11, PB_2) or of SPI1 (PA_5, PA_7, PA_6) */
+bool canIoSpiCapable(uint8_t sck, uint8_t mosi, uint8_t miso)
+{
+    return (sck == CAN_PIN(1, 10) && mosi == CAN_PIN(1, 11) && miso == CAN_PIN(1, 2)) ||
+           (sck == CAN_PIN(0, 5) && mosi == CAN_PIN(0, 7) && miso == CAN_PIN(0, 6));
+}
+bool canIoSpiStart(uint8_t sck, uint8_t mosi, uint8_t miso, uint32_t, int mode)
+{
+    if (!canIoSpiCapable(sck, mosi, miso) || mode != 3) return false;
+    simIo->spiOn = true;
+    simIo->spiPins[0] = sck; simIo->spiPins[1] = mosi; simIo->spiPins[2] = miso;
+    for (int k = 0; k < 3; k++) simIo->configured[simIo->spiPins[k]] = true;
+    return true;
+}
+void canIoSpiStop()
+{
+    if (!simIo->spiOn) return;
+    simIo->spiOn = false;
+    for (int k = 0; k < 3; k++) simIo->configured[simIo->spiPins[k]] = false;
+}
+/* the ADXL345: byte 0 read bit 7, multi byte bit 6, register; a missing one leaves MISO high */
+void canIoSpiTransfer(const uint8_t* tx, uint8_t* rx, int len)
+{
+    memset(rx, 0xFF, len);
+    if (!simIo->spiOn || !simIo->adxlPresent || len < 2) return;
+    uint8_t reg = tx[0] & 0x3F;
+    if (!(tx[0] & 0x80)) { simIo->adxlReg[reg] = tx[1]; if (reg == 0x38 && !(tx[1] & 0xC0)) simIo->adxlFifo = 0; return; }
+    rx[0] = 0;
+    if (reg == 0x00) rx[1] = 0xE5;
+    else if (reg == 0x39) rx[1] = (uint8_t)simIo->adxlFifo;
+    else if (reg == 0x32 && len == 7 && simIo->adxlFifo > 0)
+    {
+        simIo->adxlFifo--;
+        simIo->adxlReads++;
+        int hz = 3200 >> (0x0F - (simIo->adxlReg[0x2C] & 0x0F));
+        for (int a = 0; a < 3; a++)
+        {
+            int v = simIo->adxlXyz[a];
+            if (a == 0 && simIo->adxlSineAmp != 0)
+                v += (int)lrintf(simIo->adxlSineAmp * sinf(6.2831853f * simIo->adxlSineHz * simIo->adxlReads / hz));
+            if (simIo->adxlImpulseSamples > 0) v += simIo->adxlImpulse[a];
+            rx[1 + 2 * a] = (uint8_t)v; rx[2 + 2 * a] = (uint8_t)((uint16_t)v >> 8);
+        }
+        if (simIo->adxlImpulseSamples > 0) simIo->adxlImpulseSamples--;
+    }
+    else rx[1] = simIo->adxlReg[reg];
+}
+void canIoDelayUs(uint32_t) {}

@@ -1,35 +1,29 @@
 /***********************************************************************
-    Remora CAN node firmware for the BTT EBB42 V1.1 / V1.2 and the BTT EBB
-    SB2209 CAN V1.0 (both STM32G0B1CBT6, 8 MHz crystal, CAN on PB0 / PB1,
-    USB on PA11 / PA12: one firmware, target EBB_SB2209 inherits EBB42 and
-    only changes the board name)
+    Remora CAN node firmware (targets with the macro REMORA_CAN_NODE:
+    BTT EBB42, BTT EBB SB2209 CAN)
 
     Takes its node number and its modules (digital pins, step generators,
-    TMC2209 drivers, thermistors) from the hub and exchanges the process data
-    with it (CAN_PROTOCOL.md, CanNode). Heater and fans as digital or PWM
-    outputs. The step pulses and the PWM are
-    made in a TIM6 interrupt at CAN_NODE_BASE_FREQ (CanNode::baseTick).
+    TMC2209 drivers, thermistors, PWM, RGB chains) from the hub and
+    exchanges the process data with it (CAN_PROTOCOL.md, CanNode). The
+    step pulses and the PWM are made in the tick timer's interrupt at
+    CAN_NODE_BASE_FREQ (CanNode::baseTick).
 
-    EBB42: CAN on PB0 (RX) / PB1 (TX) = FDCAN2, 8 MHz crystal, no bootloader,
-    flashed over USB in DFU mode at 0x08000000, 120R termination by jumper.
-
-    Debug output (printf) goes to the USB-C port as a serial port (UsbCdc),
-    the same cable as for flashing: open the COM port / /dev/ttyACM0 with
-    any terminal, any baud rate.
+    Nothing here knows the board: its name and CAN pins are in board.h,
+    the CAN controller, the tick timer, the GPIO and the console are its
+    family's (PORTING.md). Debug output (printf) goes to the USB port as
+    a serial port, the same cable as for flashing: open the COM port /
+    /dev/ttyACM0 with any terminal, any baud rate.
 ************************************************************************/
 
 #include "mbed.h"
 #include "configuration.h"
 
-// NODE_SERIAL_TEST: serialTestMain.cpp has the main() of the USB serial test firmware
+// NODE_SERIAL_TEST: the board's serialTestMain.cpp has the main() of the USB serial test firmware
 #if defined(REMORA_CAN_NODE) && !defined(NODE_SERIAL_TEST)
 
 #include "CanNode.h"
-#include "UsbCdc.h"
-
-#ifndef REMORA_NODE_BOARD
-#define REMORA_NODE_BOARD   "BTT EBB42"     // EBB_SB2209 target: "BTT EBB SB2209 CAN"
-#endif
+#include "tickTimer.h"
+#include "nodeConsole.h"
 
 #define NODE_CAN_BITRATE    1000000         // fixed in phase 1, must match "CAN" "Bitrate" on the hub
 #define NODE_STATUS_MS      2000            // debug status line period
@@ -48,30 +42,9 @@ static const char* stateName(uint8_t state)
 
 static CanNode* baseNode = nullptr;
 
-static void baseThreadIrq()
+static void baseTick()
 {
-    if (TIM6->SR & TIM_SR_UIF)
-    {
-        TIM6->SR = ~TIM_SR_UIF;
-        baseNode->baseTick();
-    }
-}
-
-// TIM6 (basic timer, no pins; TIM2 is the mbed us ticker), highest priority: steady step timing
-static void startBaseThread(CanNode* node)
-{
-    baseNode = node;
-    __HAL_RCC_TIM6_CLK_ENABLE();
-    TIM6->CR1 = 0;
-    TIM6->PSC = 0;
-    TIM6->ARR = SystemCoreClock / CAN_NODE_BASE_FREQ - 1;
-    TIM6->EGR = TIM_EGR_UG;
-    TIM6->SR = 0;
-    TIM6->DIER = TIM_DIER_UIE;
-    NVIC_SetVector(TIM6_DAC_LPTIM1_IRQn, (uint32_t)baseThreadIrq);
-    NVIC_SetPriority(TIM6_DAC_LPTIM1_IRQn, 0);
-    NVIC_EnableIRQ(TIM6_DAC_LPTIM1_IRQn);
-    TIM6->CR1 = TIM_CR1_CEN;
+    baseNode->baseTick();
 }
 
 int main()
@@ -83,18 +56,19 @@ int main()
     // interrupt (and newlib's printf); with the RGB chain buffers CanNode grew past 1 KB, main()'s
     // frame to 1.4 KB, and the node no longer started (no USB console, no CAN ACK). Function-local
     // statics are still constructed here, after the mbed / HAL start-up, on the first pass.
-    static RemoraCAN can(FDCAN2, GPIOB, 0, 1, GPIO_AF3_FDCAN2, NODE_CAN_BITRATE);
-    static CanNode node(&can);
+    CanBus* can = canBusCreate(NODE_CAN_BITRATE);   // the board's controller (board.h: BOARD_CAN)
+    static CanNode node(can);
 
     // USB serial number = node UUID, also visible in the Windows device manager / lsusb -v
     char uuid[13];
     for (int i = 0; i < 6; i++) snprintf(&uuid[2 * i], 3, "%02x", node.getUuid()[i]);
-    usbCdc.start(uuid);
+    nodeConsoleStart(uuid);
 
-    printf("\nRemora CAN node, %s\n", REMORA_NODE_BOARD);
+    printf("\nRemora CAN node, %s\n", BOARD_NAME);
     printf("UUID %s, SystemCoreClock %lu Hz\n", uuid, (unsigned long)SystemCoreClock);
-    can.start();                            // prints the result
-    startBaseThread(&node);
+    can->start();                           // prints the result
+    baseNode = &node;
+    if (tickTimerStart(CAN_NODE_BASE_FREQ, baseTick)) tickTimerRun(true);
     printf("base thread %d Hz (step generators)\n", CAN_NODE_BASE_FREQ);
 
     uint32_t lastStatus = 0;
@@ -102,10 +76,10 @@ int main()
     while (1)
     {
         watchdog.kick();
-        uint32_t now = HAL_GetTick();
+        uint32_t now = remoraMillis();
 
         node.service(now);
-        usbCdc.service();
+        nodeConsoleService();
 
         if (now - lastStatus >= NODE_STATUS_MS)
         {
@@ -140,7 +114,22 @@ int main()
                 printf("node: TMC2209 %s %s, %lu configuration(s)\n", canPinName(tmc.getPin(), name),
                        tmcStatusText(tmc.getStatus()), (unsigned long)tmc.getConfigs());
             }
-            can.printStatus();
+            NodeAdxl345& accel = node.getAccel();
+            if (accel.isActive())
+            {
+                const int16_t* a = accel.getLast();
+                printf("node: ADXL345 %s, %lu samples, %lu ACCEL frame(s), %lu FIFO overrun(s), last %d %d %d\n",
+                       accelStatusText(accel.getStatus()), (unsigned long)accel.getSamples(),
+                       (unsigned long)node.getAccelFrames(), (unsigned long)accel.getOverruns(), a[0], a[1], a[2]);
+                if (node.getImpactOn())
+                {
+                    // the high-passed peaks: for setting "Impact Threshold" above what printing gives
+                    printf("node: impact detection, %lu impact(s), peak %d mg in the last 2 s, %d mg since the start\n",
+                           (unsigned long)accel.getImpactCount(), (int)(accel.takeRecentPeak() * 3.9f),
+                           (int)(accel.getMaxPeak() * 3.9f));
+                }
+            }
+            can->printStatus();
         }
     }
 }

@@ -1,14 +1,23 @@
 #include "canNodeIo.h"
+#include "configuration.h"                  // board.h: BOARD_NODE_RESERVED_PINS
 
-// STM32G0: the CAN nodes, and the hub's TMC2209 UART (modules/tmc/tmc2209G0.cpp, the node's driver)
-#if defined(TARGET_STM32G0)
+// Every STM32 family (REMORA_HAS_NODE_IO): GPIO by pin byte for the CAN nodes and the hub's TMC2209
+// UART (modules/tmc/tmc2209Uart.cpp, the node's driver). The pin byte is the mbed PinName
+// (port << 4 | number), GPIO through the family's HAL, the ADC through mbed, LED chains through the
+// family's LedChain (if it has one).
 
-#include "stm32g0xx_hal.h"
+#include "mbed.h"
 #include "canProtocol.h"
 #include "hal/analogin_api.h"
 #include "hal/pinmap.h"
+#include "hal/spi_api.h"
+#include <string.h>
 #include "PeripheralPins.h"
-#include "drivers/ws2812/Ws2812.h"
+#ifdef REMORA_HAS_LED_CHAIN
+#include "drivers/rgb/ledChain.h"
+#endif
+
+#ifdef REMORA_HAS_NODE_IO
 
 static GPIO_TypeDef* portOf(uint8_t pin)
 {
@@ -21,9 +30,25 @@ static GPIO_TypeDef* portOf(uint8_t pin)
 #ifdef GPIOE
         case 4: return GPIOE;
 #endif
+#ifdef GPIOF
         case 5: return GPIOF;
+#endif
+#ifdef GPIOG
+        case 6: return GPIOG;
+#endif
+#ifdef GPIOH
+        case 7: return GPIOH;
+#endif
     }
     return nullptr;
+}
+
+
+void canIoUniqueId(uint32_t id[3])
+{
+    id[0] = HAL_GetUIDw0();
+    id[1] = HAL_GetUIDw1();
+    id[2] = HAL_GetUIDw2();
 }
 
 
@@ -35,9 +60,17 @@ bool canIoPinExists(uint8_t pin)
 
 bool canIoPinReserved(uint8_t pin)
 {
-    // EBB42: CAN on PB0 / PB1 (FDCAN2), USB on PA11 / PA12
-    return pin == CAN_PIN(1, 0) || pin == CAN_PIN(1, 1) ||
-           pin == CAN_PIN(0, 11) || pin == CAN_PIN(0, 12);
+#ifdef BOARD_NODE_RESERVED_PINS
+    // the pins the node board uses itself (board.h)
+    static const uint8_t reserved[] = { BOARD_NODE_RESERVED_PINS };
+    for (unsigned i = 0; i < sizeof(reserved); i++)
+    {
+        if (pin == reserved[i]) return true;
+    }
+#else
+    (void)pin;
+#endif
+    return false;
 }
 
 
@@ -50,7 +83,15 @@ static void clockOn(GPIO_TypeDef* port)
 #ifdef GPIOE
     else if (port == GPIOE) __HAL_RCC_GPIOE_CLK_ENABLE();
 #endif
+#ifdef GPIOF
     else if (port == GPIOF) __HAL_RCC_GPIOF_CLK_ENABLE();
+#endif
+#ifdef GPIOG
+    else if (port == GPIOG) __HAL_RCC_GPIOG_CLK_ENABLE();
+#endif
+#ifdef GPIOH
+    else if (port == GPIOH) __HAL_RCC_GPIOH_CLK_ENABLE();
+#endif
 }
 
 
@@ -146,8 +187,9 @@ uint16_t canIoAnalogRead(uint8_t pin)
 
 
 // WS2812 LED chains: CAN pin byte = mbed PinName (port << 4 | number) on the STM32
+#ifdef REMORA_HAS_LED_CHAIN
 #define RGB_CHAINS  CAN_NODE_RGB_CHAINS
-static Ws2812* rgbStrip[RGB_CHAINS];
+static LedChain* rgbStrip[RGB_CHAINS];
 static uint8_t rgbPin[RGB_CHAINS];
 
 static int rgbSlot(uint8_t pin)
@@ -159,7 +201,7 @@ static int rgbSlot(uint8_t pin)
 
 bool canIoRgbCapable(uint8_t pin)
 {
-    return canIoPinExists(pin) && Ws2812::capable((PinName)pin);
+    return canIoPinExists(pin) && ledChainCapable((PinName)pin);
 }
 
 
@@ -170,7 +212,7 @@ bool canIoRgbConfigure(uint8_t pin, int leds, int bytesPerLed)
     while (i < RGB_CHAINS && rgbStrip[i]) i++;
     if (i == RGB_CHAINS) return false;
     clockOn(portOf(pin));
-    rgbStrip[i] = Ws2812::create((PinName)pin, leds, bytesPerLed, "RGB");
+    rgbStrip[i] = ledChainCreate((PinName)pin, leds, bytesPerLed, "RGB");
     rgbPin[i] = pin;
     return rgbStrip[i] != nullptr;
 }
@@ -190,6 +232,75 @@ void canIoRgbRelease(uint8_t pin)
     rgbStrip[i]->release();
     delete rgbStrip[i];
     rgbStrip[i] = nullptr;
+}
+#else
+// no LED chain driver in this family
+bool canIoRgbCapable(uint8_t) { return false; }
+bool canIoRgbConfigure(uint8_t, int, int) { return false; }
+bool canIoRgbSend(uint8_t, const uint8_t*) { return false; }
+void canIoRgbRelease(uint8_t) {}
+#endif
+
+
+// SPI master for the accelerometer: mbed's SPI HAL on the peripheral the pins belong to (the
+// pin byte is the PinName); chip select is a GPIO of the caller
+#if DEVICE_SPI
+static spi_t spiObj;
+static bool spiOn = false;
+static uint8_t spiPins[3];
+
+
+bool canIoSpiCapable(uint8_t sck, uint8_t mosi, uint8_t miso)
+{
+    if (!canIoPinExists(sck) || !canIoPinExists(mosi) || !canIoPinExists(miso)) return false;
+    // pinmap_find_peripheral: NC instead of the mbed error (a halt) of spi_init on a mismatch
+    uint32_t s = pinmap_find_peripheral((PinName)sck, PinMap_SPI_SCLK);
+    uint32_t o = pinmap_find_peripheral((PinName)mosi, PinMap_SPI_MOSI);
+    uint32_t i = pinmap_find_peripheral((PinName)miso, PinMap_SPI_MISO);
+    return s != (uint32_t)NC && s == o && s == i;
+}
+
+
+bool canIoSpiStart(uint8_t sck, uint8_t mosi, uint8_t miso, uint32_t hz, int mode)
+{
+    canIoSpiStop();
+    if (!canIoSpiCapable(sck, mosi, miso)) return false;
+    spi_init(&spiObj, (PinName)mosi, (PinName)miso, (PinName)sck, NC);
+    spi_format(&spiObj, 8, mode, 0);
+    spi_frequency(&spiObj, (int)hz);
+    spiPins[0] = sck;
+    spiPins[1] = mosi;
+    spiPins[2] = miso;
+    spiOn = true;
+    return true;
+}
+
+
+void canIoSpiTransfer(const uint8_t* tx, uint8_t* rx, int len)
+{
+    if (!spiOn) return;
+    spi_master_block_write(&spiObj, (const char*)tx, len, (char*)rx, len, 0);
+}
+
+
+void canIoSpiStop()
+{
+    if (!spiOn) return;
+    spi_free(&spiObj);
+    spiOn = false;
+    for (int k = 0; k < 3; k++) canIoRelease(spiPins[k]);
+}
+#else
+bool canIoSpiCapable(uint8_t, uint8_t, uint8_t) { return false; }
+bool canIoSpiStart(uint8_t, uint8_t, uint8_t, uint32_t, int) { return false; }
+void canIoSpiTransfer(const uint8_t*, uint8_t* rx, int len) { memset(rx, 0, len); }
+void canIoSpiStop() {}
+#endif
+
+
+void canIoDelayUs(uint32_t us)
+{
+    wait_us((int)us);
 }
 
 #endif

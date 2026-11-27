@@ -9,6 +9,8 @@
     protocol (Firmware/Tests/can) with a simulation.
 ************************************************************************/
 
+void canIoUniqueId(uint32_t id[3]);         // the MCU's 96-bit unique ID (the node UUID comes from it)
+
 bool canIoPinExists(uint8_t pin);
 bool canIoPinReserved(uint8_t pin);         // used by the node itself: CAN, USB
 
@@ -28,5 +30,12 @@ bool canIoRgbCapable(uint8_t pin);          // the pin is a channel of a timer t
 bool canIoRgbConfigure(uint8_t pin, int leds, int bytesPerLed);  // false: no free timer / DMA channel
 bool canIoRgbSend(uint8_t pin, const uint8_t* bytes);   // leds * bytesPerLed bytes; false: busy, try again
 void canIoRgbRelease(uint8_t pin);
+
+// SPI master for a sensor (one per node, the accelerometer), chip select through canIoWrite
+bool canIoSpiCapable(uint8_t sck, uint8_t mosi, uint8_t miso);     // the pins of one SPI peripheral
+bool canIoSpiStart(uint8_t sck, uint8_t mosi, uint8_t miso, uint32_t hz, int mode);
+void canIoSpiTransfer(const uint8_t* tx, uint8_t* rx, int len);     // full duplex, blocking, main loop only
+void canIoSpiStop(void);                    // the pins back to the reset state
+void canIoDelayUs(uint32_t us);
 
 #endif

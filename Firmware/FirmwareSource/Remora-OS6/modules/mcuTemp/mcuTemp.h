@@ -2,9 +2,10 @@
 #define MCUTEMP_H
 
 /***********************************************************************
-    MCU over temperature shutdown (STM32G0: Manta M8P)
+    MCU over temperature shutdown, on the families with a sensor driver
+    (REMORA_HAS_MCU_TEMP, drivers/mcuTemp/mcuTempSensor.h)
 
-    Always on, it needs no config.txt entry: the STM32's internal
+    Always on, it needs no config.txt entry: the MCU's internal
     temperature sensor is read 10 times a second in the servo thread
     (the same context as the thermistors, so the ADC is never used
     twice at once). At MCU_TEMP_SHUTDOWN the board shuts down for good:
@@ -34,12 +35,19 @@
 
 #include "extern.h"
 
-#if defined(TARGET_STM32G0)
+#include "configuration.h"
+
+#ifdef REMORA_HAS_MCU_TEMP
 #define MCU_TEMP_SUPPORTED
 #endif
 
-#define MCU_TEMP_SHUTDOWN       90.0f   // degC die temperature: STM32G0B1xxT6 is rated for TJ 105 degC
-#define MCU_TEMP_WARNING        80.0f   // degC, printed on the console
+// degC die temperature; a family sets its own in family.h (the default suits a TJ max of 105 degC)
+#ifndef MCU_TEMP_SHUTDOWN
+#define MCU_TEMP_SHUTDOWN       90.0f
+#endif
+#ifndef MCU_TEMP_WARNING
+#define MCU_TEMP_WARNING        80.0f   // printed on the console
+#endif
 #define MCU_TEMP_TRIP_READINGS  3       // consecutive readings at or above the limit (0.3 s)
 #define MCU_TEMP_FAULT_READINGS 20      // consecutive implausible readings (2 s)
 #define MCU_TEMP_UPDATE_HZ      10
@@ -57,10 +65,6 @@ class McuTemp : public Module
 {
     private:
 
-#ifdef MCU_TEMP_SUPPORTED
-        AnalogIn* sensor;
-        AnalogIn* vref;
-#endif
         volatile float* ptrFeedback;    // LinuxCNC process variable, nullptr without the module
         volatile int32_t* ptrTxHeader;
         float filtered;

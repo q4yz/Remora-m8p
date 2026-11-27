@@ -2,9 +2,9 @@
 
 #include "drivers/rgb/rgbColor.h"
 
-#if defined(TARGET_STM32G0)
+#ifdef REMORA_HAS_LED_CHAIN
 
-#include "drivers/ws2812/Ws2812.h"
+#include "drivers/rgb/ledChain.h"
 #include "drivers/pin/pin.h"
 
 #define RGB_CHAINS_MAX      4
@@ -66,7 +66,7 @@ void createRgb()
         printf("RGB: invalid pin '%s'\n", pinName);
         return;
     }
-    Ws2812* strip = Ws2812::create(pin.pinToPinName(), leds, rgbBytesPerLed((uint8_t)order), "RGB");
+    LedChain* strip = ledChainCreate(pin.pinToPinName(), leds, rgbBytesPerLed((uint8_t)order), "RGB");
     if (!strip) return;
 
     Rgb* rgb = new Rgb(strip, leds, (uint8_t)order);
@@ -107,7 +107,7 @@ void rgbService()
                 METHOD DEFINITIONS
 ************************************************************************/
 
-Rgb::Rgb(Ws2812* strip, int leds, uint8_t order) :
+Rgb::Rgb(LedChain* strip, int leds, uint8_t order) :
     strip(strip),
     order(order),
     leds(leds),
@@ -152,7 +152,7 @@ void Rgb::update()
 
 void Rgb::service()
 {
-    uint32_t now = HAL_GetTick();
+    uint32_t now = remoraMillis();
     if (!this->dirty && (now - this->lastSend) < RGB_REFRESH_MS) return;
 
     this->dirty = false;                    // first: a change during the build sends again
@@ -175,7 +175,7 @@ void Rgb::service()
 
 void createRgb()
 {
-    printf("RGB: not supported on this board yet\n");
+    printf("RGB: not supported on this MCU family yet (no LedChain driver)\n");
 }
 
 void rgbService() {}

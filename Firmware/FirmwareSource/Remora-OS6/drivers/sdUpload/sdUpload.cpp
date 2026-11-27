@@ -7,10 +7,6 @@
 #define UPLOAD_TMP_PATH     "/fs/upload.tmp"
 
 
-MBED_WEAK void sdBusAcquire(void) {}
-MBED_WEAK void sdBusRelease(void) {}
-
-
 SDUpload::SDUpload(RemoraComms* comms, FATFileSystem* fileSystem, BlockDevice* blockDevice, volatile txData_t* ptrTxData, void (*onStart)(void)) :
     comms(comms),
     fileSystem(fileSystem),
@@ -57,17 +53,17 @@ void SDUpload::service()
 
     if (this->comms->getUploadFrame((uint8_t*)&frame))
     {
-        this->lastFrameTick = HAL_GetTick();
+        this->lastFrameTick = remoraMillis();
         this->handleFrame(&frame);
     }
 
-    if (this->rebootPending && (HAL_GetTick() - this->rebootTick) > UPLOAD_REBOOT_MS)
+    if (this->rebootPending && (remoraMillis() - this->rebootTick) > UPLOAD_REBOOT_MS)
     {
         printf("SD upload: rebooting\n");
         NVIC_SystemReset();
     }
 
-    if (this->active && (HAL_GetTick() - this->lastFrameTick) > UPLOAD_TIMEOUT_MS)
+    if (this->active && (remoraMillis() - this->lastFrameTick) > UPLOAD_TIMEOUT_MS)
     {
         printf("SD upload: host timeout, rebooting\n");
         NVIC_SystemReset();
@@ -238,7 +234,7 @@ void SDUpload::handleFrame(uploadCmd_t* cmd)
             // reboot once the host has had time to read the reply
             this->reply(cmd->seq, UPLOAD_ST_OK, UPLOAD_ERR_NONE);
             this->rebootPending = true;
-            this->rebootTick = HAL_GetTick();
+            this->rebootTick = remoraMillis();
             break;
 
         default:

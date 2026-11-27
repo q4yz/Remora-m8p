@@ -7,9 +7,15 @@
 
 #include "stm32f4xx_hal.h"
 
+GPIO_TypeDef Pin::invalidPort;
+
 Pin::Pin(std::string portAndPin, int dir) :
     portAndPin(portAndPin),
-    dir(dir)
+    dir(dir),
+    modifier(NONE),
+    portIndex(0),
+    pinNumber(0),
+    pin(0)
 {
     // Set direction
     if (this->dir == INPUT)
@@ -29,7 +35,10 @@ Pin::Pin(std::string portAndPin, int dir) :
 Pin::Pin(std::string portAndPin, int dir, int modifier) :
     portAndPin(portAndPin),
     dir(dir),
-    modifier(modifier)
+    modifier(modifier),
+    portIndex(0),
+    pinNumber(0),
+    pin(0)
 {
     // Set direction
     if (this->dir == INPUT)
@@ -91,6 +100,13 @@ void Pin::configPin()
         return;
     }    
 
+    if (this->portIndex > 7 || this->pinNumber > 15)
+    {
+        printf("  Invalid port or pin, the STM32F4 has ports A to H, pins 0 to 15\n");
+        this->pin = 0;
+        return;
+    }
+
     printf("  port = GPIO%c\n", char('A' + this->portIndex));
     printf("  pin = %d\n", this->pinNumber);
 
@@ -138,6 +154,8 @@ void Pin::configPin()
 
 void Pin::initPin()
 {
+    if (!this->isValid()) return;           // invalid name: no GPIO is touched
+
     // Configure GPIO pin Output Level
     HAL_GPIO_WritePin(this->GPIOx, this->pin, GPIO_PIN_RESET);
 

@@ -56,9 +56,10 @@ static void writeFrame()
 {
     Rig r;
     r.frame(PRU_WRITE, 1234);
-    CHECK(rxData.jointFreqCmd[0] == 0);              // not before the main loop takes it
+    CHECK(rxData.jointFreqCmd[0] == 1234);            // at the frame end, without the main loop
+    r.link.servoUpdate();
+    CHECK(r.link.getStatus());                        // the link status too
     r.link.tasks();
-    CHECK(rxData.jointFreqCmd[0] == 1234);
     CHECK(rxData.header == PRU_WRITE);
     CHECK(r.link.dbgWrites == 1 && r.link.dbgFrames == 1);
     CHECK(r.hw.rearms == 1);                          // re-armed at the frame end, bus idle
@@ -141,7 +142,24 @@ static void queueFull()
     CHECK(r.hw.rearms == FRAME_QUEUE);                // the dropped frame re-arms too
     r.link.tasks();
     CHECK(r.link.dbgWrites == FRAME_QUEUE - 1);
-    CHECK(rxData.jointFreqCmd[0] == FRAME_QUEUE - 1); // the newest queued frame, the lost one is the last
+    CHECK(rxData.jointFreqCmd[0] == FRAME_QUEUE);     // the data of the frame the main loop lost was used
+}
+
+// the main loop does not run at all (the CPU is busy): LinuxCNC's commands still arrive
+static void mainLoopStarved()
+{
+    Rig r;
+    for (int i = 1; i <= 50; i++)
+    {
+        r.frame(PRU_WRITE, i * 100);
+        r.link.servoUpdate();
+    }
+    CHECK(rxData.jointFreqCmd[0] == 5000);
+    CHECK(r.link.getStatus());
+    CHECK(r.link.dbgLost == 50 - (FRAME_QUEUE - 1));
+    r.hw.remaining = 10;                              // a torn frame never reaches rxData
+    r.frame(PRU_WRITE, 7);
+    CHECK(rxData.jointFreqCmd[0] == 5000);
 }
 
 static void lateFrameEnd()
@@ -277,7 +295,7 @@ int main(int argc, char** argv)
     struct { const char* name; void (*fn)(); } tests[] = {
         {"write", writeFrame}, {"read", readFrame}, {"torn", tornFrames},
         {"torn-reset", tornCountResetsOnGoodFrame}, {"copy-torn", nextFrameDuringCopy},
-        {"dma-settle", dmaSettles}, {"queue-full", queueFull}, {"late", lateFrameEnd},
+        {"dma-settle", dmaSettles}, {"queue-full", queueFull}, {"main-loop-starved", mainLoopStarved}, {"late", lateFrameEnd},
         {"bad-header", badHeaders}, {"reject-reset", goodFrameResetsRejects},
         {"idle-rearm", idleRearm}, {"boot", noIdleRearmAtBoot}, {"status", linkStatus},
         {"stop", stopAndRestart}, {"realign-stale", realignDropsStaleFrames}, {"upload", uploadFrame},

@@ -32,8 +32,12 @@ class Pin
         uint32_t            mode;
         uint32_t            pull;
         uint32_t            speed;
-        GPIO_TypeDef*       GPIOx;
+        // an invalid pin name points at a dummy port in RAM: set() / get() then touch no real GPIO
+        // (left uninitialised they wrote to whatever address the heap held)
+        GPIO_TypeDef*       GPIOx = &invalidPort;
         GPIO_InitTypeDef    GPIO_InitStruct = {0};
+
+        static GPIO_TypeDef invalidPort;
 
     public:
 
@@ -50,22 +54,17 @@ class Pin
         void pull_up();
         void pull_down();
         PinName pinToPinName();
+        bool isValid() const { return this->GPIOx != &invalidPort; }
 
+        // direct register access (BSRR: set in the low half, reset in the high half)
         inline bool get()
         {
-            return HAL_GPIO_ReadPin(this->GPIOx, this->pin);
+            return (this->GPIOx->IDR & this->pin) != 0;
         }
 
         inline void set(bool value)
         {
-            if (value)
-            {
-                HAL_GPIO_WritePin(this->GPIOx, this->pin, GPIO_PIN_SET);
-            }
-            else
-            {
-                HAL_GPIO_WritePin(this->GPIOx, this->pin, GPIO_PIN_RESET);
-            }
+            this->GPIOx->BSRR = value ? (uint32_t)this->pin : ((uint32_t)this->pin << 16);
         }
 };
 

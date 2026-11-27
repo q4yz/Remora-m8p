@@ -11,6 +11,7 @@
 #include "configuration.h"
 #include "remora.h"
 #include "RemoraComms.h"
+#include "sdBus.h"
 
 /***********************************************************************
     SD card file upload over the Remora SPI link
@@ -38,10 +39,6 @@
     board, which also lets the SD bootloader flash a new firmware.bin.
 ************************************************************************/
 
-// The board's SD card bus, driven only while the card is in use (the M8P shares it with the driver
-// sockets, see main.cpp). Weak no-ops for boards that don't need it.
-void sdBusAcquire(void);
-void sdBusRelease(void);
 
 #define UPLOAD_DATA_MAX     44              // data bytes per frame
 #define UPLOAD_BUF_SIZE     8192            // RAM buffer flushed to the SD card in one go

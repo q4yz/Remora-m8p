@@ -23,6 +23,7 @@ could disturb the base thread).
 | `0x300 + n` | PWM (duties) | hub → node | PWM |
 | `0x380 + n` | ANALOG (ADC readings) | node → hub | temperature |
 | `0x400 + n` | RGB (LED colours) | hub → node | RGB |
+| `0x480 + n` | ACCEL (accelerometer) | node → hub | ADXL345 |
 | `0x580 + n` | CONFIG REPLY | node → hub | 2 |
 | `0x600 + n` | CONFIG | hub → node | 2 |
 | `0x700 + n` | HEARTBEAT | node → hub | 1 |
@@ -121,6 +122,10 @@ Module types (pins as `port << 4 | number`, port 0 = A, `0xFF` none):
   (0: no W, 1 ... 4: W as byte 1 ... 4), e.g. GRB = 2, GRBW = 26
   (`drivers/rgb/rgbColor.h`). The segments on one pin are one chain (same
   colour order), up to 2 chains.
+- `0x07` ADXL345 accelerometer, data: CS pin, flags (range, rate), SCK pin,
+  MOSI pin, MISO pin (see below).
+- `0x08` impact detection on the ADXL345, data: `0xFF`, threshold (0.1 g),
+  node local input bit, hold (10 ms), high-pass cutoff (10 Hz) (see below).
 
 ## Process data (phase 3)
 
@@ -329,6 +334,110 @@ sent off).
   B of segments k and k + 1. On a change at most every 20 ms, and every 1 s.
 - Off after the configuration until LinuxCNC is there, while LinuxCNC is
   gone (COMMAND safe flag) and in state SAFE.
+
+## Accelerometer (ADXL345)
+
+An `"ADXL345"` module in a node entry: the accelerometer of the EBB42 /
+SB2209 (SPI2: CS PB12, SCK PB10, MOSI PB11, MISO PB2, the default pins) as
+up to three LinuxCNC process variables, e.g. for measuring resonances:
+
+```json
+{ "Type": "ADXL345", "Comment": "toolhead accelerometer",
+  "X PV[i]": 3, "Y PV[i]": 4, "Z PV[i]": 5,
+  "Axes Map": "x,y,z", "Range": 16, "Rate": 3200 }
+```
+
+- `"X PV[i]"`, `"Y PV[i]"`, `"Z PV[i]"`: the process variable of each machine
+  axis, -1 or left out: that axis is not sent (the frame has only 6 PVs, e.g.
+  `"X PV[i]"` and `"Y PV[i]"` for the input shaper of a CoreXY). None at all
+  for impact detection only (below); they must not be used by a module of the
+  hub or another node.
+- `"Axes Map"`: the sensor axis of the machine's X, Y and Z, like Klipper's
+  `axes_map`, e.g. `"-y,x,z"` for a sensor turned by 90°. Default `"x,y,z"`.
+- `"Range"` ±2, 4, 8 or 16 g (default 16), always full resolution
+  (3.9 mg per count); `"Rate"` the sensor's output data rate, 100, 200, 400,
+  800, 1600 or 3200 Hz (default 3200).
+- `"CS Pin"`, `"SCK Pin"`, `"MOSI Pin"`, `"MISO Pin"`: other wiring, the
+  three SPI pins must belong to one SPI of the node MCU (else
+  `CFG_ERR_NOT_SPI`). One accelerometer per node.
+
+The values are mm/s² (as LinuxCNC's accelerations; 1 g = 9806.65 mm/s²), the
+Z axis shows about 9807 at rest. 0 while the node is lost, not configured or
+the sensor does not answer.
+
+- The node reads the sensor's FIFO (stream mode, 32 samples) once per ms in
+  its main loop, at 4 MHz SPI mode 3, and sends the average of the new
+  samples (3.2 at 3200 Hz: a box filter against aliasing) in ACCEL
+  `0x480 + n`: X, Y, Z int16 little endian in sensor counts, byte 6 the
+  impact peak since the last frame (0.1 g, 0 without impact detection),
+  byte 7 flags (bit 0: the FIFO ran over, samples lost).
+  Only when there are new samples: at 3200 / 1600 Hz every ms, at 400 Hz 400
+  frames a second.
+- The hub maps the axes, scales to mm/s² and writes the process variables in
+  its main loop; LinuxCNC reads them every servo period. Node and LinuxCNC
+  clocks are not synchronised: a sample is now and then seen twice or not at
+  all. Fine for resonance frequencies up to a few hundred Hz, not a
+  replacement for Klipper's timestamped 3200 Hz capture.
+- Bus load: about 13 % at 1 Mbit/s (one frame per ms), on top of a node's
+  joints (26 %).
+- The node checks the device ID (`0xE5`) at the start and every second, and a
+  FIFO count over 32 (MISO not driven) at once. A missing sensor is reported
+  in EMCY (byte 0 `0x02`, 1 module index, 2 status 0 not configured / 1 ok /
+  2 not found, 3 device ID read), shown in the hub's boot summary and on
+  changes, and set up again when it answers:
+
+  ```
+             ADXL345 PB_12 ok, 12 -40 9790 mm/s^2
+  ```
+
+Module record: `0x07`, data: CS pin, flags (bits 0-1 range 2 / 4 / 8 / 16 g,
+bits 4-7 the ADXL345 BW_RATE code `0x0A` 100 Hz ... `0x0F` 3200 Hz), SCK pin,
+MOSI pin, MISO pin.
+
+### Impact detection
+
+A crash guard on the node's ADXL345: `"Impact Bit"` in the `"ADXL345"` module
+turns it on, a LinuxCNC input bit that goes to 1 when the toolhead is hit:
+
+```json
+{ "Type": "ADXL345", "Comment": "toolhead accelerometer",
+  "Impact Bit": 6, "Impact Threshold": 3.0, "Impact Hold ms": 200,
+  "Impact Cutoff Hz": 300, "Impact Peak PV[i]": -1 }
+```
+
+- The node runs every sensor sample (3200 Hz) through a 2nd order
+  Butterworth high-pass per axis, `"Impact Cutoff Hz"` (default 300, 50 ...
+  0.4 × `"Rate"`): motion, accelerating and the ringing of the frame (below
+  about 150 Hz) are filtered out, the short broadband spike of a hit stays.
+  The magnitude of the three high-passed axes against `"Impact Threshold"`
+  (g, default 3.0, 0.1 ... 25.5).
+- Above it the node's local input bit goes to 1 and stays for `"Impact Hold
+  ms"` (default 200, 10 ... 2550) after the last sample over the threshold.
+  It goes out in STATUS right away: LinuxCNC sees it about 2 ms after the
+  hit (FIFO read every ms, CAN, the hub's main loop, the next servo period).
+  0 while the node is lost (the `"Status Bit"` covers that).
+- `"Impact Peak PV[i]"`: optional, the highest high-passed magnitude per ms in
+  g, for setting the threshold: print fast, look at it with halscope or
+  `minmax`, set the threshold well above. The node's USB console also prints
+  the peak of the last 2 s and since the start.
+- With the input bit in the E-stop chain (or a feed hold) LinuxCNC stops
+  within a few ms, at 200 mm/s about 0.5 mm of travel. It does not restore
+  the position: the steppers are open loop, home again after a crash.
+- What it catches: the nozzle or toolhead hitting a clip, the frame, a loose
+  part. What it does not: a nozzle dragging over the print or a blob, those
+  forces are below the toolhead's own vibration. A bump by hand while the
+  machine stands sets it too; gate it in HAL (e.g. `and2` with
+  `motion.motion-enabled`) if that matters.
+- Filter in integer (Q14 coefficients), the M0+ has no FPU; the filter starts
+  from the first sample after the (re)start, no false hit from gravity.
+
+EMCY `0x03` per impact (the bit was 0): byte 1 module index, 2-3 the peak
+(0.1 g), 4-5 impacts since the configuration; the hub prints it
+(`CAN: node 1 (toolhead) IMPACT 1, 7.1 g, LinuxCNC input bit 6`) while
+LinuxCNC is not running, and the count in the boot summary.
+
+Module record: `0x08`, after the node's `0x07`, data: `0xFF` (no pin),
+threshold (0.1 g), node local input bit, hold (10 ms), cutoff (10 Hz).
 
 ## Next phases
 
